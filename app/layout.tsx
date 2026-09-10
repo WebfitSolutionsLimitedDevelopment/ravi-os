@@ -1,4 +1,5 @@
 import './globals.css'
+import LockGate from '@/components/lock-gate'
 
 export const metadata = {
   title: 'Ravi OS',
@@ -9,7 +10,7 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><LockGate>{children}</LockGate></body>
     </html>
   )
 }

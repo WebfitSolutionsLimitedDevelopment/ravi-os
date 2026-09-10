@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react'
 import { LockKeyhole, ShieldCheck } from 'lucide-react'
+import ReminderFab from './reminder-fab'
 import styles from './lock-gate.module.css'
 
 export default function LockGate({ children }: { children: React.ReactNode }) {
@@ -65,5 +66,5 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
     </main>
   }
 
-  return <>{children}</>
+  return <>{children}<ReminderFab/></>
 }

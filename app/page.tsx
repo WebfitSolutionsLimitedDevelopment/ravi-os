@@ -2,19 +2,41 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, Bell, BriefcaseBusiness, CalendarDays, Check, ChevronRight, CircleDollarSign,
-  Clock3, Command, HeartPulse, IndianRupee, Inbox, ListChecks, Mail, MapPin, Mic,
-  Plus, Repeat2, Search, ShieldCheck, Sparkles, Target, Utensils, WalletCards, Watch, X
+  Activity, Bell, CalendarDays, Check, ChevronRight, CircleDollarSign, Clock3,
+  Command, HeartPulse, Inbox, IndianRupee, ListChecks, Mail, MapPin, Mic, Plus,
+  Repeat2, Search, ShieldCheck, Sparkles, Target, Users, Utensils, WalletCards, Watch, X
 } from 'lucide-react'
 
+type Section = 'Home' | 'Inbox' | 'Tasks' | 'Calendar' | 'Family' | 'Projects' | 'Health' | 'Finance' | 'Journal'
 type Task = { id: number; title: string; meta: string; priority: 'High' | 'Medium' | 'Low'; done: boolean }
 type Capture = { id: number; text: string; created: string }
+type Signal = { id: string; title: string; detail: string; section: Section; tone: 'urgent' | 'info' | 'good'; badge?: string }
 
 const initialTasks: Task[] = [
   { id: 1, title: 'Review India house contractor milestone', meta: 'India House · Personal', priority: 'High', done: false },
-  { id: 2, title: 'Review Ravi OS Phase 3 deployment', meta: 'Ravi OS · Today', priority: 'Medium', done: false },
-  { id: 3, title: 'Check important personal emails', meta: 'Inbox · Personal', priority: 'Medium', done: false },
-  { id: 4, title: 'Review weekly personal commitments', meta: 'Planning · Weekly', priority: 'Low', done: false },
+  { id: 2, title: 'Review Ravi OS deployment', meta: 'Ravi OS · Today', priority: 'Medium', done: false },
+  { id: 3, title: 'Review weekly personal commitments', meta: 'Planning · Weekly', priority: 'Low', done: false },
+]
+
+const signals: Signal[] = [
+  { id: 'mail', title: '2 new emails need review', detail: 'Across your connected inboxes', section: 'Inbox', tone: 'info', badge: '2' },
+  { id: 'calendar', title: '1 upcoming appointment', detail: 'Open Calendar to review your schedule', section: 'Calendar', tone: 'good', badge: '1' },
+  { id: 'task', title: '1 high-priority action', detail: 'India house contractor milestone', section: 'Tasks', tone: 'urgent', badge: '1' },
+]
+
+const inboxes = [
+  { name: 'Personal', address: 'ravi14feb@gmail.com', unread: 1, status: 'Connected' },
+  { name: 'Webfit News', address: 'webfitnews@gmail.com', unread: 1, status: 'Connected' },
+  { name: 'Career / Professional', address: 'Professional mailbox', unread: 0, status: 'Connect next' },
+]
+
+const sampleMail = [
+  { account: 'Personal', sender: 'Personal Inbox', subject: 'New message requiring review', time: 'Today', label: 'Review' },
+  { account: 'Webfit News', sender: 'Webfit News Inbox', subject: 'New media message requiring review', time: 'Today', label: 'Review' },
+]
+
+const appointments = [
+  { time: 'Next', title: 'Calendar connection pending', meta: 'Google Calendar will populate appointments here' },
 ]
 
 const waiting = [
@@ -28,42 +50,35 @@ const recurring = [
   { title: 'Important document backup', when: 'Every 3 months' },
 ]
 
-const nzFmt = (d: Date) => new Intl.DateTimeFormat('en-NZ', {
-  timeZone: 'Pacific/Auckland', hour: '2-digit', minute: '2-digit', weekday: 'short', day: '2-digit', month: 'short'
-}).format(d)
-const inFmt = (d: Date) => new Intl.DateTimeFormat('en-IN', {
-  timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', weekday: 'short', day: '2-digit', month: 'short'
-}).format(d)
-
-function aucklandWeekday(d: Date) {
-  return new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', weekday: 'long' }).format(d)
-}
+const nzFmt = (d: Date) => new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: '2-digit', minute: '2-digit', weekday: 'short', day: '2-digit', month: 'short' }).format(d)
+const inFmt = (d: Date) => new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', weekday: 'short', day: '2-digit', month: 'short' }).format(d)
+const weekday = (d: Date) => new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', weekday: 'long' }).format(d)
 
 function greeting(d: Date) {
-  const h = Number(new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: '2-digit', hourCycle: 'h23' }).format(d))
-  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'
+  const hour = Number(new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: '2-digit', hourCycle: 'h23' }).format(d))
+  return hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 }
 
 function dietFor(day: string) {
-  const nonVegDays = ['Monday', 'Wednesday', 'Friday']
-  return nonVegDays.includes(day)
-    ? { allowed: true, label: 'Non-veg allowed', detail: 'Chicken, mutton and egg are allowed today.' }
-    : { allowed: false, label: 'Vegetarian day', detail: 'No chicken, mutton or egg today.' }
+  const allowed = ['Monday', 'Wednesday', 'Friday'].includes(day)
+  return allowed
+    ? { allowed, label: 'Non-veg allowed', detail: 'Chicken, mutton and egg are allowed today.' }
+    : { allowed, label: 'Vegetarian day', detail: 'No chicken, mutton or egg today.' }
 }
 
 export default function Page() {
   const [now, setNow] = useState(new Date())
+  const [active, setActive] = useState<Section>('Home')
   const [loc, setLoc] = useState('Sandringham · Auckland')
+  const [tasks, setTasks] = useState<Task[]>(initialTasks)
   const [capture, setCapture] = useState('')
   const [captures, setCaptures] = useState<Capture[]>([])
-  const [tasks, setTasks] = useState<Task[]>(initialTasks)
-  const [active, setActive] = useState('Home')
   const [commandOpen, setCommandOpen] = useState(false)
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 30000)
-    const savedTasks = localStorage.getItem('ravi-os-tasks-v3')
-    const savedCaptures = localStorage.getItem('ravi-os-captures-v3')
+    const savedTasks = localStorage.getItem('ravi-os-tasks-v4')
+    const savedCaptures = localStorage.getItem('ravi-os-captures-v4')
     if (savedTasks) setTasks(JSON.parse(savedTasks))
     if (savedCaptures) setCaptures(JSON.parse(savedCaptures))
     const keyHandler = (e: KeyboardEvent) => {
@@ -75,147 +90,114 @@ export default function Page() {
     return () => { clearInterval(timer); window.removeEventListener('keydown', keyHandler) }
   }, [])
 
-  useEffect(() => { localStorage.setItem('ravi-os-tasks-v3', JSON.stringify(tasks)) }, [tasks])
-  useEffect(() => { localStorage.setItem('ravi-os-captures-v3', JSON.stringify(captures)) }, [captures])
+  useEffect(() => { localStorage.setItem('ravi-os-tasks-v4', JSON.stringify(tasks)) }, [tasks])
+  useEffect(() => { localStorage.setItem('ravi-os-captures-v4', JSON.stringify(captures)) }, [captures])
 
-  const hello = useMemo(() => greeting(now), [now])
-  const weekday = useMemo(() => aucklandWeekday(now), [now])
-  const diet = useMemo(() => dietFor(weekday), [weekday])
+  const day = useMemo(() => weekday(now), [now])
+  const diet = useMemo(() => dietFor(day), [day])
   const openTasks = tasks.filter(t => !t.done)
   const completed = tasks.length - openTasks.length
 
+  const go = (section: Section) => { setActive(section); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  const toggleTask = (id: number) => setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t))
+  const addCapture = () => {
+    const text = capture.trim(); if (!text) return
+    setCaptures(prev => [{ id: Date.now(), text, created: 'Just now' }, ...prev].slice(0, 6)); setCapture('')
+  }
   const enableLocation = () => navigator.geolocation
-    ? navigator.geolocation.getCurrentPosition(
-        () => setLoc('Live location enabled · Auckland'),
-        () => setLoc('Sandringham · Auckland')
-      )
+    ? navigator.geolocation.getCurrentPosition(() => setLoc('Live location enabled · Auckland'), () => setLoc('Sandringham · Auckland'))
     : setLoc('Location unavailable')
 
-  const addCapture = () => {
-    const text = capture.trim()
-    if (!text) return
-    setCaptures(prev => [{ id: Date.now(), text, created: 'Just now' }, ...prev].slice(0, 6))
-    setCapture('')
-  }
+  const nav: { label: Section; icon: React.ReactNode }[] = [
+    { label: 'Home', icon: <Command/> }, { label: 'Inbox', icon: <Inbox/> }, { label: 'Tasks', icon: <ListChecks/> },
+    { label: 'Calendar', icon: <CalendarDays/> }, { label: 'Family', icon: <Users/> }, { label: 'Projects', icon: <Target/> },
+    { label: 'Health', icon: <HeartPulse/> }, { label: 'Finance', icon: <WalletCards/> }, { label: 'Journal', icon: <Sparkles/> },
+  ]
 
-  const toggleTask = (id: number) => setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t))
-
-  const nav = [
-    ['Home', <Command key="home"/>], ['Inbox', <Inbox key="inbox"/>], ['Tasks', <ListChecks key="tasks"/>],
-    ['Calendar', <CalendarDays key="calendar"/>], ['Projects', <Target key="projects"/>], ['Health', <HeartPulse key="health"/>],
-    ['Finance', <WalletCards key="finance"/>], ['Journal', <Sparkles key="journal"/>]
-  ] as const
-
-  return <main className="osShell">
-    <aside className="osSidebar">
-      <div className="osBrand"><div className="osMark">RG</div><div><b>Ravi OS</b><span>Private command system</span></div></div>
-      <nav className="osNav">{nav.map(([label, icon]) => <button key={label} onClick={() => setActive(label)} className={active === label ? 'active' : ''}>{icon}<span>{label}</span></button>)}</nav>
-      <div className="sidebarBottom">
-        <button className="commandHint" onClick={() => setCommandOpen(true)}><Search/><span>Quick command</span><kbd>⌘K</kbd></button>
-        <div className="privacyBadge"><ShieldCheck/><span><b>Private workspace</b><small>PIN protected · no indexing</small></span></div>
+  return <main className="appShell">
+    <aside className="sidebar">
+      <button className="brand" onClick={() => go('Home')}><span className="brandMark">RG</span><span><b>Ravi OS</b><small>Private command system</small></span></button>
+      <nav>{nav.map(item => <button key={item.label} className={active === item.label ? 'active' : ''} onClick={() => go(item.label)}>{item.icon}<span>{item.label}</span>{item.label === 'Inbox' && <i>2</i>}</button>)}</nav>
+      <div className="sidebarFooter">
+        <button className="quickSearch" onClick={() => setCommandOpen(true)}><Search/><span>Quick command</span><kbd>⌘K</kbd></button>
+        <div className="private"><ShieldCheck/><span><b>Private workspace</b><small>PIN protected · no indexing</small></span></div>
       </div>
     </aside>
 
-    <section className="osContent">
-      <div className="topbar">
-        <div><p className="overline">RAVI OS · PHASE 3</p><h1>{hello}, Ravi.</h1><p className="lead">One view for what matters today, what is waiting, and what needs action.</p></div>
-        <div className="topActions"><button className="topCommand" onClick={() => setCommandOpen(true)}><Search/>Search or command <kbd>⌘K</kbd></button><button className="iconButton"><Bell/><i>2</i></button></div>
-      </div>
+    <section className="content">
+      <header className="pageHeader">
+        <div><p className="eyebrow">RAVI OS · PERSONAL COMMAND CENTRE</p><h1>{active === 'Home' ? `${greeting(now)}, Ravi.` : active}</h1><p className="subtitle">{subtitle(active)}</p></div>
+        <div className="headerActions"><button className="searchButton" onClick={() => setCommandOpen(true)}><Search/>Search or command<kbd>⌘K</kbd></button><button className="bell" onClick={() => go('Home')}><Bell/><i>3</i></button></div>
+      </header>
 
-      <section className="contextRail">
-        <div><Clock3/><span><b>Auckland</b><small>{nzFmt(now)}</small></span></div>
-        <div><IndianRupee/><span><b>India</b><small>{inFmt(now)}</small></span></div>
-        <button onClick={enableLocation}><MapPin/><span><b>Location</b><small>{loc}</small></span></button>
-        <div className={diet.allowed ? 'dietAllowed' : 'dietVeg'}><Utensils/><span><b>{weekday}</b><small>{diet.label}</small></span></div>
-      </section>
-
-      <div className="heroGrid">
-        <section className="focusCard">
-          <div className="sectionHeader"><div><p className="overline">FOCUS</p><h2>Your attention queue</h2></div><span>{openTasks.filter(t => t.priority === 'High').length + waiting.length} signals</span></div>
-          <div className="focusRows">
-            <div className="focusRow critical"><i/><span><b>India house contractor milestone</b><small>High priority · review commitment and progress</small></span><em>Action</em></div>
-            <div className="focusRow waiting"><i/><span><b>Contractor update still pending</b><small>Waiting for 3 days</small></span><em>Follow up</em></div>
-            <div className="focusRow normal"><i/><span><b>Connect live Gmail + Calendar</b><small>Required for inbox and appointments inside Ravi OS</small></span><em>Phase 3</em></div>
-          </div>
-        </section>
-
-        <section className="dayScore">
-          <div className="scoreRing"><strong>{completed}/{tasks.length}</strong><span>tasks done</span></div>
-          <div><p className="overline">TODAY</p><h2>{openTasks.length} actions remain</h2><p>Your personal operating rhythm is on track.</p></div>
-        </section>
-      </div>
-
-      <div className="dashboardGrid">
-        <section className="module inboxModule">
-          <div className="moduleHead"><div><p className="overline">INBOX INTELLIGENCE</p><h2>Mailboxes</h2></div><Mail/></div>
-          <div className="accountList">
-            <div><span className="accountDot personal"/><span><b>Personal</b><small>ravi14feb@gmail.com</small></span><em>ChatGPT connected</em></div>
-            <div><span className="accountDot media"/><span><b>Webfit News</b><small>webfitnews@gmail.com</small></span><em>ChatGPT connected</em></div>
-            <div><span className="accountDot career"/><span><b>Career / Professional</b><small>Connect your professional mailbox</small></span><em>Pending</em></div>
-          </div>
-          <div className="integrationNote"><Sparkles/><span><b>Ravi OS runtime connection is next</b><small>Google OAuth will let the app classify mail into Action, Waiting, Career, Personal and FYI without mixing accounts.</small></span></div>
-        </section>
-
-        <section className="module calendarModule">
-          <div className="moduleHead"><div><p className="overline">CALENDAR</p><h2>Appointments</h2></div><CalendarDays/></div>
-          <div className="emptyIntegration"><div className="emptyIcon"><CalendarDays/></div><b>Live calendar not linked yet</b><p>Once Google OAuth is connected, today’s appointments and upcoming commitments will appear here automatically.</p><button>Connection planned</button></div>
-        </section>
-
-        <section className="module taskModule">
-          <div className="moduleHead"><div><p className="overline">ACTION</p><h2>Today’s tasks</h2></div><span>{openTasks.length} open</span></div>
-          <div className="taskList">{tasks.map(task => <button className={task.done ? 'taskRow done' : 'taskRow'} key={task.id} onClick={() => toggleTask(task.id)}>
-            <span className="taskCheck">{task.done && <Check/>}</span><span><b>{task.title}</b><small>{task.meta}</small></span><em className={task.priority.toLowerCase()}>{task.priority}</em>
-          </button>)}</div>
-        </section>
-
-        <section className="module waitingModule">
-          <div className="moduleHead"><div><p className="overline">WAITING FOR</p><h2>Open loops</h2></div><Repeat2/></div>
-          <div className="compactList">{waiting.map(item => <div key={item.title}><span><b>{item.title}</b><small>{item.owner}</small></span><em>{item.age}</em></div>)}</div>
-        </section>
-
-        <section className="module healthModule">
-          <div className="moduleHead"><div><p className="overline">HEALTH</p><h2>Daily signals</h2></div><Activity/></div>
-          <div className="metricGrid"><Metric label="Steps" value="—"/><Metric label="Sleep" value="—"/><Metric label="Protein" value="—"/></div>
-          <div className="healthFooter"><Watch/><span><b>Apple Health bridge not connected</b><small>iPhone companion app planned for HealthKit sync.</small></span></div>
-        </section>
-
-        <section className="module foodModule">
-          <div className="moduleHead"><div><p className="overline">FOOD RULE</p><h2>{diet.label}</h2></div><Utensils/></div>
-          <p className="moduleText">{diet.detail}</p>
-          <div className="weekStrip">{['M','T','W','T','F','S','S'].map((d, i) => <div key={i} className={[0,2,4].includes(i) ? 'allowed' : ''}><b>{d}</b><span>{[0,2,4].includes(i) ? 'NV' : 'V'}</span></div>)}</div>
-        </section>
-
-        <section className="module moneyModule">
-          <div className="moduleHead"><div><p className="overline">MONEY</p><h2>Finance watch</h2></div><CircleDollarSign/></div>
-          <div className="moneyState"><strong>No bill due today</strong><span>Base currency NZD · original INR values preserved</span></div>
-          <div className="financeMini"><div><b>Next</b><span>14 Sep</span></div><div><b>Vault</b><span>Planned</span></div><div><b>Alerts</b><span>Ready next</span></div></div>
-        </section>
-
-        <section className="module recurringModule">
-          <div className="moduleHead"><div><p className="overline">ROUTINES</p><h2>Recurring obligations</h2></div><Repeat2/></div>
-          <div className="compactList">{recurring.map(item => <div key={item.title}><span><b>{item.title}</b><small>{item.when}</small></span><ChevronRight/></div>)}</div>
-        </section>
-      </div>
+      {active === 'Home' && <HomeView now={now} loc={loc} day={day} diet={diet} signals={signals} openTasks={openTasks.length} completed={completed} go={go} enableLocation={enableLocation}/>} 
+      {active === 'Inbox' && <InboxView/>}
+      {active === 'Tasks' && <TasksView tasks={tasks} toggleTask={toggleTask}/>} 
+      {active === 'Calendar' && <CalendarView/>}
+      {active === 'Family' && <FamilyView/>}
+      {active === 'Projects' && <SimpleView icon={<Target/>} title="Projects" text="Track personal, family and portfolio projects without cluttering Home."/>}
+      {active === 'Health' && <HealthView diet={diet} day={day}/>} 
+      {active === 'Finance' && <SimpleView icon={<CircleDollarSign/>} title="Finance" text="Bills, accounts, assets and reminders will live in this protected section. Home will only surface what needs attention."/>}
+      {active === 'Journal' && <SimpleView icon={<Sparkles/>} title="Journal" text="Private notes, reflections and life records will remain separate from operational tasks."/>}
 
       <section className="captureDock">
-        <div className="captureLead"><div className="aiOrb"><Sparkles/></div><span><b>Tell Ravi OS anything</b><small>Task, reminder, expense, thought, appointment or follow-up. AI classification will sit behind human confirmation.</small></span></div>
-        <div className="captureInput"><input value={capture} onChange={e => setCapture(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCapture()} placeholder="Try: remind me to call the contractor tomorrow at 7 PM"/><button className="mic"><Mic/></button><button className="addCapture" onClick={addCapture}><Plus/>Add</button></div>
-        {captures.length > 0 && <div className="captureItems">{captures.map(item => <div key={item.id}><Sparkles/><span><b>{item.text}</b><small>{item.created} · saved on this device</small></span><button onClick={() => setCaptures(prev => prev.filter(x => x.id !== item.id))}><X/></button></div>)}</div>}
+        <div><span className="spark"><Sparkles/></span><span><b>Capture anything</b><small>Task, reminder, expense, thought, appointment or follow-up.</small></span></div>
+        <div className="captureBar"><input value={capture} onChange={e => setCapture(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCapture()} placeholder="Tell Ravi OS what you need to remember…"/><button><Mic/></button><button className="add" onClick={addCapture}><Plus/>Add</button></div>
+        {captures.length > 0 && <div className="captures">{captures.map(item => <div key={item.id}><Sparkles/><span><b>{item.text}</b><small>{item.created} · saved on this device</small></span><button onClick={() => setCaptures(prev => prev.filter(x => x.id !== item.id))}><X/></button></div>)}</div>}
       </section>
     </section>
 
-    <nav className="mobileNav">
-      <button className={active === 'Home' ? 'active' : ''} onClick={() => setActive('Home')}><Command/><span>Home</span></button>
-      <button className={active === 'Inbox' ? 'active' : ''} onClick={() => setActive('Inbox')}><Inbox/><span>Inbox</span></button>
-      <button className="mobileAdd" onClick={() => document.querySelector<HTMLInputElement>('.captureInput input')?.focus()}><Plus/></button>
-      <button className={active === 'Tasks' ? 'active' : ''} onClick={() => setActive('Tasks')}><ListChecks/><span>Tasks</span></button>
-      <button className={active === 'Calendar' ? 'active' : ''} onClick={() => setActive('Calendar')}><CalendarDays/><span>Calendar</span></button>
-    </nav>
+    <nav className="mobileNav">{(['Home','Inbox','Tasks','Calendar'] as Section[]).map(section => <button key={section} className={active === section ? 'active' : ''} onClick={() => go(section)}>{section === 'Home' ? <Command/> : section === 'Inbox' ? <Inbox/> : section === 'Tasks' ? <ListChecks/> : <CalendarDays/>}<span>{section}</span></button>)}<button className="mobileAdd" onClick={() => document.querySelector<HTMLInputElement>('.captureBar input')?.focus()}><Plus/></button></nav>
 
-    {commandOpen && <div className="commandOverlay" onClick={() => setCommandOpen(false)}><div className="commandPanel" onClick={e => e.stopPropagation()}><div className="commandSearch"><Search/><input autoFocus placeholder="Search Ravi OS or type a command…"/><kbd>ESC</kbd></div><div className="commandOptions"><p>QUICK ACTIONS</p>{['Capture a task','Add a reminder','Open inbox','Open calendar','Review finance'].map((x,i) => <button key={x}><span>{i === 0 ? <Plus/> : i === 1 ? <Clock3/> : i === 2 ? <Inbox/> : i === 3 ? <CalendarDays/> : <WalletCards/>}{x}</span><ChevronRight/></button>)}</div></div></div>}
+    {commandOpen && <div className="commandOverlay" onClick={() => setCommandOpen(false)}><div className="commandPanel" onClick={e => e.stopPropagation()}><div className="commandInput"><Search/><input autoFocus placeholder="Go to Inbox, Calendar, Tasks…"/><kbd>ESC</kbd></div><div className="commandLinks">{nav.slice(0,7).map(item => <button key={item.label} onClick={() => { go(item.label); setCommandOpen(false) }}>{item.icon}<span>{item.label}</span><ChevronRight/></button>)}</div></div></div>}
   </main>
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div><strong>{value}</strong><span>{label}</span></div>
+function HomeView({ now, loc, day, diet, signals, openTasks, completed, go, enableLocation }:{ now:Date; loc:string; day:string; diet:{allowed:boolean;label:string;detail:string}; signals:Signal[]; openTasks:number; completed:number; go:(s:Section)=>void; enableLocation:()=>void }) {
+  return <>
+    <section className="contextBar">
+      <div><Clock3/><span><b>Auckland</b><small>{nzFmt(now)}</small></span></div>
+      <div><IndianRupee/><span><b>India</b><small>{inFmt(now)}</small></span></div>
+      <button onClick={enableLocation}><MapPin/><span><b>Location</b><small>{loc}</small></span></button>
+      <div className={diet.allowed ? 'diet ok' : 'diet'}><Utensils/><span><b>{day}</b><small>{diet.label}</small></span></div>
+    </section>
+
+    <section className="homeHero">
+      <div><p className="eyebrow">TODAY AT A GLANCE</p><h2>Only what needs your attention.</h2><p>Open the relevant section when you want details. Home stays intentionally light.</p></div>
+      <div className="progress"><strong>{completed}</strong><span>done</span><b>{openTasks}</b><span>open</span></div>
+    </section>
+
+    <section className="signalGrid">{signals.map(signal => <button key={signal.id} className={`signal ${signal.tone}`} onClick={() => go(signal.section)}><span className="signalIcon">{signal.section === 'Inbox' ? <Mail/> : signal.section === 'Calendar' ? <CalendarDays/> : <ListChecks/>}</span><span><b>{signal.title}</b><small>{signal.detail}</small></span><em>{signal.badge}</em><ChevronRight/></button>)}</section>
+
+    <div className="homeGrid">
+      <section className="panel priorityPanel"><div className="panelHead"><div><p className="eyebrow">NEXT ACTIONS</p><h2>Priority queue</h2></div><button onClick={() => go('Tasks')}>View tasks <ChevronRight/></button></div><div className="rows"><div><i className="redDot"/><span><b>India house contractor milestone</b><small>High priority · personal</small></span><em>Action</em></div><div><i className="amberDot"/><span><b>House contractor update</b><small>Waiting 3 days</small></span><em>Waiting</em></div></div></section>
+      <section className="panel"><div className="panelHead"><div><p className="eyebrow">UPCOMING</p><h2>Schedule</h2></div><button onClick={() => go('Calendar')}>Open calendar <ChevronRight/></button></div><div className="emptyCompact"><CalendarDays/><span><b>Calendar connection is next</b><small>Appointments, PTM, doctor visits and family commitments will surface here as concise reminders.</small></span></div></section>
+    </div>
+  </>
 }
+
+function InboxView() {
+  return <div className="sectionGrid">
+    <section className="panel full"><div className="panelHead"><div><p className="eyebrow">MAIL ACCOUNTS</p><h2>Inboxes</h2></div><span className="countPill">2 unread</span></div><div className="accountCards">{inboxes.map(box => <div key={box.name}><span className="accountAvatar">{box.name[0]}</span><span><b>{box.name}</b><small>{box.address}</small></span><em>{box.unread ? `${box.unread} new` : box.status}</em></div>)}</div></section>
+    <section className="panel full"><div className="panelHead"><div><p className="eyebrow">NEW & IMPORTANT</p><h2>Messages</h2></div><span className="mutedLabel">Read-only first</span></div><div className="mailList">{sampleMail.map((mail,i) => <button key={i}><span className="mailAccount">{mail.account}</span><span><b>{mail.subject}</b><small>{mail.sender} · {mail.time}</small></span><em>{mail.label}</em><ChevronRight/></button>)}</div><div className="infoNote"><ShieldCheck/><span><b>Account separation is preserved.</b><small>Ravi OS will know which mailbox received each message and classify it without mixing Personal, Career or Media.</small></span></div></section>
+  </div>
+}
+
+function TasksView({tasks,toggleTask}:{tasks:Task[];toggleTask:(id:number)=>void}) {
+  return <section className="panel full"><div className="panelHead"><div><p className="eyebrow">ACTION SYSTEM</p><h2>Tasks</h2></div><span className="countPill">{tasks.filter(t=>!t.done).length} open</span></div><div className="taskList">{tasks.map(task => <button key={task.id} className={task.done?'task done':'task'} onClick={() => toggleTask(task.id)}><span className="taskCheck">{task.done && <Check/>}</span><span><b>{task.title}</b><small>{task.meta}</small></span><em className={task.priority.toLowerCase()}>{task.priority}</em></button>)}</div><div className="subPanels"><div><p className="eyebrow">WAITING FOR</p>{waiting.map(x=><p key={x.title} className="miniRow"><span><b>{x.title}</b><small>{x.owner}</small></span><em>{x.age}</em></p>)}</div><div><p className="eyebrow">RECURRING</p>{recurring.map(x=><p key={x.title} className="miniRow"><span><b>{x.title}</b><small>{x.when}</small></span><Repeat2/></p>)}</div></div></section>
+}
+
+function CalendarView() {
+  return <div className="sectionGrid"><section className="panel full"><div className="panelHead"><div><p className="eyebrow">PERSONAL SCHEDULE</p><h2>Calendar & appointments</h2></div><span className="mutedLabel">Google Calendar · next integration</span></div><div className="appointmentList">{appointments.map(a=><div key={a.title}><span className="timeBox">{a.time}</span><span><b>{a.title}</b><small>{a.meta}</small></span><ChevronRight/></div>)}</div><div className="calendarCategories"><span>Personal</span><span>Family</span><span>Career</span><span>Medical</span><span>School / PTM</span><span>Projects</span></div></section></div>
+}
+
+function FamilyView() {
+  return <section className="panel full"><div className="panelHead"><div><p className="eyebrow">FAMILY</p><h2>Shared responsibilities</h2></div><Users/></div><div className="featureCards"><div><b>Appointments</b><small>Doctor, dentist and family commitments</small></div><div><b>School</b><small>PTM, events and important dates</small></div><div><b>Shared tasks</b><small>Items that can later be shared with family members</small></div></div><div className="infoNote"><ShieldCheck/><span><b>Privacy boundaries stay explicit.</b><small>Family items can be shared later, while Finance, Journal and sensitive personal data remain private by default.</small></span></div></section>
+}
+
+function HealthView({diet,day}:{diet:{allowed:boolean;label:string;detail:string};day:string}) {
+  return <div className="sectionGrid"><section className="panel full"><div className="panelHead"><div><p className="eyebrow">HEALTH</p><h2>Daily health signals</h2></div><Activity/></div><div className="metricCards"><div><Watch/><strong>—</strong><span>Steps</span></div><div><HeartPulse/><strong>—</strong><span>Sleep</span></div><div><Utensils/><strong>{diet.allowed?'NV':'V'}</strong><span>{day}</span></div></div><div className="infoNote"><Watch/><span><b>Apple Health is not connected yet.</b><small>The iPhone HealthKit companion will provide real steps and health signals. Ravi OS will never invent these values.</small></span></div></section></div>
+}
+
+function SimpleView({icon,title,text}:{icon:React.ReactNode;title:string;text:string}) { return <section className="panel full simplePage"><span className="largeIcon">{icon}</span><h2>{title}</h2><p>{text}</p><span className="coming">Next functionality phase</span></section> }
+function subtitle(section:Section) { const map:Record<Section,string> = { Home:'Your day, reduced to the signals that matter.', Inbox:'All mail detail stays here, separated by account and purpose.', Tasks:'Actions, waiting items and recurring obligations.', Calendar:'Appointments and commitments across personal and family life.', Family:'Shared responsibilities without exposing private areas.', Projects:'A clean view of active personal and professional projects.', Health:'Real health signals only, with no fabricated data.', Finance:'Protected financial tracking and due-date intelligence.', Journal:'Private life notes and reflections.'}; return map[section] }

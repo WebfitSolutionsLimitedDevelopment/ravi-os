@@ -1,5 +1,5 @@
 import './globals.css'
-import LockGate from '@/components/lock-gate'
+import LockGate from '../components/lock-gate'
 
 export const metadata = {
   title: 'Ravi OS',

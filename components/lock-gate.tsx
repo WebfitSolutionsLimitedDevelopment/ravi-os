@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react'
 import { LockKeyhole, ShieldCheck } from 'lucide-react'
+import styles from './lock-gate.module.css'
 
 export default function LockGate({ children }: { children: React.ReactNode }) {
   const [checking, setChecking] = useState(true)
@@ -43,23 +44,23 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
   }
 
   if (checking) {
-    return <main className="lockShell"><div className="lockLoading"><div className="lockMark">RG</div><span>Securing Ravi OS…</span></div></main>
+    return <main className={styles.shell}><div className={styles.loading}><div className={styles.mark}>RG</div><span>Securing Ravi OS…</span></div></main>
   }
 
   if (!authenticated) {
-    return <main className="lockShell">
-      <section className="lockCard">
-        <div className="lockMark">RG</div>
-        <p className="eyebrow">PRIVATE PERSONAL SYSTEM</p>
+    return <main className={styles.shell}>
+      <section className={styles.card}>
+        <div className={styles.mark}>RG</div>
+        <p className={styles.eyebrow}>PRIVATE PERSONAL SYSTEM</p>
         <h1>Welcome to Ravi OS</h1>
-        <p className="lockIntro">Enter your PIN to open your personal command centre.</p>
-        <form onSubmit={submit} className="lockForm">
+        <p className={styles.intro}>Enter your PIN to open your personal command centre.</p>
+        <form onSubmit={submit} className={styles.form}>
           <label htmlFor="pin"><LockKeyhole size={15}/> Access PIN</label>
           <input id="pin" autoFocus inputMode="numeric" type="password" value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="Enter PIN" autoComplete="current-password" />
-          {error && <p className="lockError">{error}</p>}
+          {error && <p className={styles.error}>{error}</p>}
           <button disabled={!pin || submitting}>{submitting ? 'Unlocking…' : 'Unlock Ravi OS'}</button>
         </form>
-        <div className="lockPrivacy"><ShieldCheck size={15}/><span>Private by design · Search indexing disabled</span></div>
+        <div className={styles.privacy}><ShieldCheck size={15}/><span>Private by design · Search indexing disabled</span></div>
       </section>
     </main>
   }

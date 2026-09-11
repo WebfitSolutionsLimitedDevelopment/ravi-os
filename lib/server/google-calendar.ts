@@ -101,6 +101,17 @@ async function validAccessToken(){
 }
 
 function nextDate(date:string){const d=new Date(`${date}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)}
+function addMinutesLocal(date:string,time:string,minutes:number){
+  const [h,m]=time.split(':').map(Number)
+  const total=h*60+m+minutes
+  const dayOffset=Math.floor(total/1440)
+  const minuteOfDay=((total%1440)+1440)%1440
+  const hh=String(Math.floor(minuteOfDay/60)).padStart(2,'0')
+  const mm=String(minuteOfDay%60).padStart(2,'0')
+  let outDate=date
+  for(let i=0;i<dayOffset;i++)outDate=nextDate(outDate)
+  return `${outDate}T${hh}:${mm}:00`
+}
 function eventBody(item:CalendarSyncItem){
   const description=[item.notes||'',`Synced from Ravi OS (${item.kind})`].filter(Boolean).join('\n\n')
   const base:any={
@@ -116,9 +127,7 @@ function eventBody(item:CalendarSyncItem){
   }
   if(item.time){
     const start=`${item.date}T${item.time}:00`
-    const startDate=new Date(`${start}+12:00`)
-    const endDate=new Date(startDate.getTime()+30*60000)
-    const end=`${item.date}T${String(endDate.getUTCHours()).padStart(2,'0')}:${String(endDate.getUTCMinutes()).padStart(2,'0')}:00`
+    const end=addMinutesLocal(item.date,item.time,30)
     base.start={dateTime:start,timeZone:'Pacific/Auckland'}
     base.end={dateTime:end,timeZone:'Pacific/Auckland'}
   }else{

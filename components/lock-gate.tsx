@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { LockKeyhole, ShieldCheck } from 'lucide-react'
+import { RAVI_PHOTO_DATA_URI } from '../lib/ravi-photo'
 import ReminderSyncBootstrap from './reminder-sync-bootstrap'
 import styles from './lock-gate.module.css'
 
@@ -34,10 +35,11 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
   }
 
   if(geetRoute)return <>{children}</>
-  if (checking) return <main className={styles.shell}><div className={styles.loading}><div className={styles.mark}>RG</div><span>Securing Ravi OS…</span></div></main>
+  if (checking) return <main className={styles.shell}><div className={styles.loading}><img className={styles.profilePhotoSmall} src={RAVI_PHOTO_DATA_URI} alt="Ravi"/><span>Securing Ravi OS…</span></div></main>
   if (!authenticated) return <main className={styles.shell}>
     <section className={styles.card}>
-      <div className={styles.mark}>RG</div><p className={styles.eyebrow}>PRIVATE PERSONAL SYSTEM</p><h1>Welcome to Ravi OS</h1>
+      <img className={styles.profilePhoto} src={RAVI_PHOTO_DATA_URI} alt="Ravi"/>
+      <p className={styles.eyebrow}>PRIVATE PERSONAL SYSTEM</p><h1>Welcome back, Ravi.</h1>
       <p className={styles.intro}>Enter your PIN to open your personal command centre.</p>
       <form onSubmit={submit} className={styles.form}>
         <label htmlFor="pin"><LockKeyhole size={15}/> Access PIN</label>

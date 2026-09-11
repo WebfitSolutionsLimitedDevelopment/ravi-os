@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
 import { clearGeetSession, isGeetSession, setGeetSession, verifyGeetPin } from '../../../lib/server/ravi-os-auth'
-import { familyLogin, familyLogout, setFamilySession } from '../../../lib/server/family-reminder-client'
+import { familyLogin, familyLogout, hasFamilySession, setFamilySession } from '../../../lib/server/family-reminder-client'
 
 export async function GET() {
-  return NextResponse.json({ authenticated: await isGeetSession() })
+  const appValid=await isGeetSession()
+  const familyValid=appValid?await hasFamilySession():false
+  return NextResponse.json({ authenticated: appValid && familyValid })
 }
 
 export async function POST(request: Request) {

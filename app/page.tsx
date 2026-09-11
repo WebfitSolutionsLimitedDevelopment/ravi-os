@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Bell, CalendarDays, Check, ChevronRight, CircleDollarSign, Command, HardHat,
+  Bell, CalendarDays, Check, ChevronRight, CircleDollarSign, HardHat,
   HeartPulse, Home, Inbox, ListChecks, Mail, MapPin, Mic, MoreHorizontal, Plus,
   Search, ShieldCheck, Sparkles, StickyNote, Target, Users, Utensils, WalletCards,
   X, Image as ImageIcon, Clock3
@@ -12,6 +12,7 @@ import {
 type Section = 'Home' | 'Inbox' | 'Tasks' | 'Calendar' | 'Family' | 'Projects' | 'Health' | 'Finance' | 'Journal'
 type Task = { id:number; title:string; meta:string; priority:'High'|'Medium'|'Low'; done:boolean }
 type Note = { id:number; text:string; created:string }
+type HomeReminder = { id:number; title:string; notes?:string; date:string; time:string; source?:'text'|'voice'|'image'; imageName?:string }
 
 const initialTasks: Task[] = [
   { id:1, title:'Review India house contractor milestone', meta:'Construction · India House', priority:'High', done:false },
@@ -32,24 +33,67 @@ function greeting(d:Date){
 
 function weekday(d:Date){return new Intl.DateTimeFormat('en-NZ',{timeZone:'Pacific/Auckland',weekday:'long'}).format(d)}
 function dietFor(day:string){return ['Monday','Wednesday','Friday'].includes(day)?'Non-veg allowed':'Vegetarian day'}
+function reminderTime(r:HomeReminder){return new Date(`${r.date}T${r.time || '23:59'}:00`).getTime()}
+function reminderUrgency(r:HomeReminder,now:Date){
+  const target=reminderTime(r)
+  const today=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()
+  const targetDay=new Date(`${r.date}T00:00:00`).getTime()
+  const dayDiff=Math.round((targetDay-today)/86400000)
+  if(target<now.getTime() || dayDiff===0) return 'urgent'
+  if(dayDiff===1) return 'tomorrow'
+  if(dayDiff===2) return 'soon'
+  return 'later'
+}
+function reminderWhen(r:HomeReminder,now:Date){
+  const diff=reminderTime(r)-now.getTime()
+  if(diff<0){
+    const mins=Math.max(1,Math.floor(Math.abs(diff)/60000))
+    if(mins<60) return `Overdue by ${mins}m`
+    return `Overdue by ${Math.floor(mins/60)}h`
+  }
+  const mins=Math.floor(diff/60000)
+  if(mins<60) return `${Math.max(1,mins)}m left`
+  if(mins<1440) return `${Math.floor(mins/60)}h ${mins%60}m left`
+  const days=Math.floor(mins/1440)
+  return `${days}d ${Math.floor((mins%1440)/60)}h left`
+}
+function reminderDayLabel(r:HomeReminder,now:Date){
+  const today=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()
+  const targetDay=new Date(`${r.date}T00:00:00`).getTime()
+  const d=Math.round((targetDay-today)/86400000)
+  if(d===0) return 'TODAY'
+  if(d===1) return 'TOMORROW'
+  if(d===2) return 'DAY AFTER'
+  if(d<0) return 'OVERDUE'
+  return new Date(`${r.date}T12:00:00`).toLocaleDateString('en-NZ',{day:'numeric',month:'short'})
+}
 
 export default function Page(){
   const [now,setNow]=useState(new Date())
   const [active,setActive]=useState<Section>('Home')
   const [tasks,setTasks]=useState<Task[]>(initialTasks)
   const [notes,setNotes]=useState<Note[]>([])
+  const [reminders,setReminders]=useState<HomeReminder[]>([])
   const [sheet,setSheet]=useState<'actions'|'notifications'|'task'|'note'|'more'|null>(null)
   const [taskTitle,setTaskTitle]=useState('')
   const [noteText,setNoteText]=useState('')
   const [location,setLocation]=useState('Auckland')
 
   useEffect(()=>{
-    const timer=setInterval(()=>setNow(new Date()),30000)
+    const loadReminders=()=>{
+      try{
+        const raw=localStorage.getItem('ravi-os-reminders-v2')
+        setReminders(raw?JSON.parse(raw):[])
+      }catch{setReminders([])}
+    }
+    const timer=setInterval(()=>{setNow(new Date());loadReminders()},30000)
     const savedTasks=localStorage.getItem('ravi-os-tasks-v5')
     const savedNotes=localStorage.getItem('ravi-os-notes-v1')
     if(savedTasks) setTasks(JSON.parse(savedTasks))
     if(savedNotes) setNotes(JSON.parse(savedNotes))
-    return()=>clearInterval(timer)
+    loadReminders()
+    window.addEventListener('storage',loadReminders)
+    return()=>{clearInterval(timer);window.removeEventListener('storage',loadReminders)}
   },[])
 
   useEffect(()=>localStorage.setItem('ravi-os-tasks-v5',JSON.stringify(tasks)),[tasks])
@@ -93,7 +137,7 @@ export default function Page(){
         <div className="headerIcons"><button aria-label="Search"><Search/></button><button aria-label="Notifications" onClick={()=>setSheet('notifications')}><Bell/><i>4</i></button></div>
       </header>
 
-      {active==='Home'&&<HomeView now={now} day={day} location={location} diet={dietFor(day)} openTasks={openTasks.length} go={go} setSheet={setSheet} enableLocation={enableLocation}/>} 
+      {active==='Home'&&<HomeView now={now} day={day} location={location} diet={dietFor(day)} openTasks={openTasks.length} reminders={reminders} go={go} setSheet={setSheet} enableLocation={enableLocation}/>} 
       {active==='Inbox'&&<InboxView/>}
       {active==='Tasks'&&<TasksView tasks={tasks} toggleTask={toggleTask} onAdd={()=>setSheet('task')}/>} 
       {active==='Calendar'&&<CalendarView/>}
@@ -123,11 +167,31 @@ export default function Page(){
   </main>
 }
 
-function HomeView({now,day,location,diet,openTasks,go,setSheet,enableLocation}:{now:Date;day:string;location:string;diet:string;openTasks:number;go:(s:Section)=>void;setSheet:(s:any)=>void;enableLocation:()=>void}){
+function HomeView({now,day,location,diet,openTasks,reminders,go,setSheet,enableLocation}:{now:Date;day:string;location:string;diet:string;openTasks:number;reminders:HomeReminder[];go:(s:Section)=>void;setSheet:(s:any)=>void;enableLocation:()=>void}){
   const time=new Intl.DateTimeFormat('en-NZ',{timeZone:'Pacific/Auckland',hour:'numeric',minute:'2-digit'}).format(now)
+  const ordered=[...reminders].sort((a,b)=>reminderTime(a)-reminderTime(b))
+  const visible=ordered.slice(0,4)
   return <>
     <section className="todayStrip">
       <button onClick={enableLocation}><MapPin/><span>{location}</span></button><span>{day}</span><span>{time}</span><span className="dietChip"><Utensils/>{diet}</span>
+    </section>
+
+    <section className="reminderHero">
+      <div className="reminderHeroHead">
+        <div><p>NEXT UP</p><h2><Bell/> Your reminders</h2><small>Nearest date and time always comes first.</small></div>
+        <Link href="/reminders">View all <ChevronRight/></Link>
+      </div>
+      {visible.length===0?
+        <Link className="reminderEmpty" href="/reminders"><Bell/><span><b>No reminders yet</b><small>Tap to add one by text, voice or poster.</small></span><Plus/></Link>
+        :<div className="homeReminderList">{visible.map(r=>{
+          const urgency=reminderUrgency(r,now)
+          return <Link href="/reminders" className={`homeReminder ${urgency}`} key={r.id}>
+            <span className="homeReminderDate"><b>{reminderDayLabel(r,now)}</b><strong>{r.time}</strong></span>
+            <span className="homeReminderBody"><b>{r.title}</b><small>{new Date(`${r.date}T12:00:00`).toLocaleDateString('en-NZ',{weekday:'short',day:'numeric',month:'short'})} · {r.time}</small></span>
+            <span className="homeReminderCountdown"><Clock3/><b>{reminderWhen(r,now)}</b></span>
+          </Link>
+        })}</div>}
+      <Link className="addReminderNow" href="/reminders"><Plus/> Add reminder</Link>
     </section>
 
     <section className="quickCapture">
@@ -139,7 +203,6 @@ function HomeView({now,day,location,diet,openTasks,go,setSheet,enableLocation}:{
       <div className="sectionTitle"><div><p>RIGHT NOW</p><h2>Needs your attention</h2></div><button onClick={()=>setSheet('notifications')}>View all</button></div>
       <div className="notificationList">
         <button onClick={()=>go('Inbox')}><span className="notifIcon blue"><Mail/></span><span><b>2 new emails</b><small>Across your connected inboxes</small></span><ChevronRight/></button>
-        <Link href="/reminders"><span className="notifIcon amber"><Bell/></span><span><b>Reminders ready</b><small>Capture by voice, text or poster</small></span><ChevronRight/></Link>
         <Link href="/construction"><span className="notifIcon red"><HardHat/></span><span><b>Construction update</b><small>2 items need attention</small></span><ChevronRight/></Link>
       </div>
     </section>

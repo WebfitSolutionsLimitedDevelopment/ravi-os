@@ -2,8 +2,7 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
 import { Bell, CalendarClock, ChevronRight, Edit3, Image as ImageIcon, LockKeyhole, LogOut, Plus, Save, Trash2, X } from 'lucide-react'
-import { parsePosterSemantics } from '../../lib/reminder-poster-parser'
-import { readPosterText } from '../../lib/poster-ocr-client'
+import { extractPosterFields } from '../../lib/poster-extract-client'
 import styles from './geet.module.css'
 
 type Reminder={id:string;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;posterUrl?:string;createdBy?:string;updatedBy?:string}
@@ -12,7 +11,6 @@ function stamp(r:Reminder){return new Date(`${r.date}T${r.time||'23:59'}:00`).ge
 function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue';const m=Math.max(1,Math.round(d/60000));if(m<60)return`${m}m left`;const h=Math.floor(m/60);if(h<24)return`${h}h ${m%60}m left`;const days=Math.floor(h/24);return`${days}d ${h%24}h left`}
 function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)return styles.urgent;if(h<=48)return styles.tomorrow;if(h<=72)return styles.soon;return styles.later}
 function dueAt(date:string,time:string){return new Date(`${date}T${time}:00`).toISOString()}
-function posterPreview(file:File):Promise<string>{return new Promise(resolve=>{const fr=new FileReader();fr.onload=()=>resolve(String(fr.result||''));fr.onerror=()=>resolve('');fr.readAsDataURL(file)})}
 
 export default function GeetPage(){
   const[auth,setAuth]=useState<boolean|null>(null);const[pin,setPin]=useState('');const[loginError,setLoginError]=useState('')
@@ -32,10 +30,20 @@ export default function GeetPage(){
   async function logout(){await fetch('/api/geet-auth',{method:'DELETE'});setAuth(false);setReminders([])}
 
   async function onPoster(e:ChangeEvent<HTMLInputElement>){
-    const file=e.target.files?.[0];if(!file)return;setWorking(true);setMessage('Reading poster…');setImageName(file.name);setImageData(await posterPreview(file))
-    try{const text=await readPosterText(file);const p=parsePosterSemantics(text);setTitle(p.title==='Event reminder'?'':p.title);setDate(p.date||'');setTime(p.time||'');setVenue([p.venue,p.address].filter(Boolean).join(', '));setMessage(p.title==='Event reminder'||!p.date||!p.time?'Please check the missing fields before saving.':'Looks good. Check once and save.')}
-    catch{setTitle('');setDate('');setTime('');setVenue('');setMessage('I could not read this poster reliably. Please fill the fields below.')}
-    finally{setWorking(false)}
+    const file=e.target.files?.[0];if(!file)return
+    setWorking(true);setMessage('Reading the event poster…');setImageName(file.name);setTitle('');setDate('');setTime('');setVenue('')
+    try{
+      const p=await extractPosterFields(file)
+      setImageData(p.imageDataUrl)
+      setTitle(p.title==='Event reminder'?'':p.title)
+      setDate(p.date||'')
+      setTime(p.time||'')
+      setVenue([p.venue,p.address].filter(Boolean).join(', '))
+      const complete=Boolean(p.title&&p.title!=='Event reminder'&&p.date&&p.time)
+      setMessage(complete?'Poster read. Check once and save.':'I could not confidently read every field. Please fill only the missing field(s), then save.')
+    }catch{
+      setImageData('');setMessage('I could not read this poster reliably. Please enter the event title, date, time and venue.')
+    }finally{setWorking(false)}
   }
 
   async function save(e:FormEvent){e.preventDefault();if(!title.trim()||!date||!time)return;setWorking(true);setMessage('Saving…')

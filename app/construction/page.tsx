@@ -1,112 +1,73 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
-import {
-  ArrowLeft, Building2, CalendarClock, CheckCircle2, CircleDollarSign, FileCheck2,
-  HardHat, IndianRupee, Mail, MessageCircle, NotebookPen, Phone, Plus, ReceiptIndianRupee,
-  ShieldCheck, UserRound, WalletCards
-} from 'lucide-react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, Building2, CalendarClock, CheckCircle2, CircleDollarSign, FileCheck2, HardHat, IndianRupee, NotebookPen, Pencil, Plus, ReceiptIndianRupee, Save, ShieldCheck, Trash2, UserRound, WalletCards, X } from 'lucide-react'
 import styles from './construction.module.css'
 
-type Reminder = { id:number; text:string; done:boolean }
-type Note = { id:number; text:string; created:string }
+type Project={id:string;name:string;location:string;description?:string;status:string;contract_value:number;currency:string;target_date?:string|null;target_text?:string|null;contractor_name?:string|null;contractor_phone?:string|null;contractor_email?:string|null;contractor_address?:string|null}
+type Milestone={id:string;title:string;notes?:string;sequence_no:number;status:'planned'|'current'|'completed'|'blocked';due_date?:string|null;completed_at?:string|null}
+type Payment={id:string;amount:number;currency:string;payment_date:string;method?:string;reference?:string;notes?:string;milestone_id?:string|null}
+type DocumentRow={id:string;title:string;category:string;status:'required'|'received'|'verified'|'not_applicable';notes?:string}
+type NoteRow={id:string;note:string;note_type:'note'|'risk'|'decision'|'action';created_at:string}
+type Dashboard={project:Project;milestones:Milestone[];payments:Payment[];documents:DocumentRow[];notes:NoteRow[]}
+type Tab='overview'|'payments'|'milestones'|'documents'|'notes'
 
-const CONTRACT_TOTAL = 1200000
-const INITIAL_PAID = 0
+const CODE='kaptanganj-house'
+const money=(n:number)=>`₹${Math.round(n||0).toLocaleString('en-IN')}`
+const niceDate=(d?:string|null)=>d?new Date(`${d}T12:00:00`).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'}):'Not set'
 
-export default function ConstructionPage() {
-  const [paid, setPaid] = useState(INITIAL_PAID)
-  const [reminders, setReminders] = useState<Reminder[]>([
-    { id:1, text:'Confirm written scope, material specifications and completion date', done:false },
-    { id:2, text:'Collect contractor ID, address and signed agreement', done:false },
-    { id:3, text:'Record every payment against a milestone', done:false },
-  ])
-  const [note, setNote] = useState('')
-  const [notes, setNotes] = useState<Note[]>([])
+export default function ConstructionPage(){
+  const[data,setData]=useState<Dashboard|null>(null);const[loading,setLoading]=useState(true);const[error,setError]=useState('');const[tab,setTab]=useState<Tab>('overview');const[working,setWorking]=useState(false)
+  const[paymentOpen,setPaymentOpen]=useState(false);const[amount,setAmount]=useState('');const[paymentDate,setPaymentDate]=useState(new Date().toISOString().slice(0,10));const[paymentMethod,setPaymentMethod]=useState('Bank transfer');const[paymentRef,setPaymentRef]=useState('');const[paymentNotes,setPaymentNotes]=useState('');const[paymentMilestone,setPaymentMilestone]=useState('')
+  const[contractorOpen,setContractorOpen]=useState(false);const[cName,setCName]=useState('');const[cPhone,setCPhone]=useState('');const[cEmail,setCEmail]=useState('');const[cAddress,setCAddress]=useState('')
+  const[note,setNote]=useState('');const[noteType,setNoteType]=useState<NoteRow['note_type']>('note')
+  const[milestoneOpen,setMilestoneOpen]=useState(false);const[mTitle,setMTitle]=useState('');const[mNotes,setMNotes]=useState('');const[mDue,setMDue]=useState('')
 
-  useEffect(() => {
-    const p = localStorage.getItem('ravi-os-construction-paid')
-    const r = localStorage.getItem('ravi-os-construction-reminders')
-    const n = localStorage.getItem('ravi-os-construction-notes')
-    if (p) setPaid(Number(p) || 0)
-    if (r) setReminders(JSON.parse(r))
-    if (n) setNotes(JSON.parse(n))
-  }, [])
+  async function load(){try{const r=await fetch(`/api/projects/${CODE}`,{cache:'no-store'});if(!r.ok)throw new Error();const d=await r.json();setData(d);setError('');const p=d.project as Project;setCName(p.contractor_name||'');setCPhone(p.contractor_phone||'');setCEmail(p.contractor_email||'');setCAddress(p.contractor_address||'')}catch{setError('Project workspace could not be loaded.')}finally{setLoading(false)}}
+  useEffect(()=>{load()},[])
+  async function action(actionName:string,payload:Record<string,unknown>={}){setWorking(true);try{const r=await fetch(`/api/projects/${CODE}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:actionName,...payload})});if(!r.ok)throw new Error();await load();return true}catch{setError('That change could not be saved.');return false}finally{setWorking(false)}}
 
-  useEffect(() => localStorage.setItem('ravi-os-construction-paid', String(paid)), [paid])
-  useEffect(() => localStorage.setItem('ravi-os-construction-reminders', JSON.stringify(reminders)), [reminders])
-  useEffect(() => localStorage.setItem('ravi-os-construction-notes', JSON.stringify(notes)), [notes])
+  const paid=useMemo(()=>data?.payments.reduce((s,p)=>s+Number(p.amount||0),0)||0,[data]);const total=Number(data?.project.contract_value||0);const remaining=Math.max(total-paid,0);const paidPct=total?Math.min(100,Math.round(paid/total*100)):0;const completedMilestones=data?.milestones.filter(m=>m.status==='completed').length||0;const docsReady=data?.documents.filter(d=>d.status==='verified').length||0
 
-  const remaining = Math.max(CONTRACT_TOTAL - paid, 0)
-  const paidPct = useMemo(() => Math.min(Math.round((paid / CONTRACT_TOTAL) * 100), 100), [paid])
+  async function savePayment(e:FormEvent){e.preventDefault();if(!(Number(amount)>0))return;const ok=await action('payment_create',{amount:Number(amount),currency:'INR',paymentDate,method:paymentMethod,reference:paymentRef,notes:paymentNotes,milestoneId:paymentMilestone||null});if(ok){setPaymentOpen(false);setAmount('');setPaymentRef('');setPaymentNotes('');setPaymentMilestone('')}}
+  async function saveContractor(e:FormEvent){e.preventDefault();const ok=await action('project_update',{contractorName:cName,contractorPhone:cPhone,contractorEmail:cEmail,contractorAddress:cAddress});if(ok)setContractorOpen(false)}
+  async function saveNote(e:FormEvent){e.preventDefault();if(!note.trim())return;const ok=await action('note_create',{note:note.trim(),noteType});if(ok){setNote('');setNoteType('note')}}
+  async function addMilestone(e:FormEvent){e.preventDefault();if(!mTitle.trim())return;const seq=(data?.milestones.length||0)+1;const ok=await action('milestone_create',{title:mTitle.trim(),notes:mNotes.trim(),dueDate:mDue||null,sequenceNo:seq});if(ok){setMilestoneOpen(false);setMTitle('');setMNotes('');setMDue('')}}
 
-  function addNote() {
-    const text = note.trim(); if (!text) return
-    setNotes(prev => [{ id:Date.now(), text, created:'Just now' }, ...prev])
-    setNote('')
-  }
+  if(loading)return <main className={styles.page}><div className={styles.loading}>Opening project workspace…</div></main>
+  if(!data)return <main className={styles.page}><div className={styles.loading}>{error||'Project unavailable.'}</div></main>
+  const p=data.project
 
   return <main className={styles.page}>
-    <header className={styles.header}>
-      <div className={styles.leftHead}>
-        <Link href="/" className={styles.back}><ArrowLeft/> Ravi OS</Link>
-        <div className={styles.titleBlock}><span className={styles.icon}><HardHat/></span><span><p>CONSTRUCTION WORKSPACE</p><h1>Kaptanganj House</h1><small>Personal property · Kushinagar, Uttar Pradesh, India</small></span></div>
-      </div>
-      <span className={styles.private}><ShieldCheck/> Private</span>
-    </header>
+    <header className={styles.header}><div><Link href='/' className={styles.back}><ArrowLeft/>Ravi OS</Link><div className={styles.title}><span><HardHat/></span><div><p>PROJECT WORKSPACE</p><h1>{p.name}</h1><small>{p.location}</small></div></div></div><span className={styles.private}><ShieldCheck/>Private</span></header>
 
-    <section className={styles.summary}>
-      <div><span className={styles.metricIcon}><CircleDollarSign/></span><span><small>Contract value</small><strong>₹12,00,000</strong><em>Materials + construction</em></span></div>
-      <div><span className={styles.metricIcon}><WalletCards/></span><span><small>Paid</small><strong>₹{paid.toLocaleString('en-IN')}</strong><em>{paidPct}% of contract</em></span></div>
-      <div><span className={styles.metricIcon}><ReceiptIndianRupee/></span><span><small>Remaining</small><strong>₹{remaining.toLocaleString('en-IN')}</strong><em>Track before every payment</em></span></div>
-      <div><span className={styles.metricIcon}><CalendarClock/></span><span><small>Target</small><strong>2–3 months</strong><em>Handover commitment</em></span></div>
-    </section>
+    {error&&<div className={styles.error}>{error}</div>}
+    <section className={styles.summary}><div><CircleDollarSign/><span><small>Contract</small><strong>{money(total)}</strong><em>Materials + construction</em></span></div><div><WalletCards/><span><small>Paid</small><strong>{money(paid)}</strong><em>{paidPct}% released</em></span></div><div><ReceiptIndianRupee/><span><small>Remaining</small><strong>{money(remaining)}</strong><em>Release by milestone</em></span></div><div><CalendarClock/><span><small>Target</small><strong>{p.target_text||niceDate(p.target_date)}</strong><em>{completedMilestones}/{data.milestones.length} milestones done</em></span></div></section>
 
-    <div className={styles.grid}>
-      <section className={`${styles.card} ${styles.contractor}`}>
-        <div className={styles.cardHead}><div><p>CONTRACTOR</p><h2>Primary contact</h2></div><UserRound/></div>
-        <div className={styles.person}><span className={styles.avatar}>C</span><span><b>Contractor details</b><small>Add verified name, mobile, email and address when agreement is finalised.</small></span></div>
-        <div className={styles.actions}><button><Phone/> Call</button><button><MessageCircle/> WhatsApp</button><button><Mail/> Email</button></div>
-        <div className={styles.info}><ShieldCheck/><span><b>Before next payment</b><small>Verify identity, written scope, GST/tax status if applicable, material brands, milestones, defects responsibility and handover date.</small></span></div>
-      </section>
+    <section className={styles.progressCard}><div><span><b>Overall payment progress</b><small>{money(paid)} of {money(total)}</small></span><strong>{paidPct}%</strong></div><div className={styles.progress}><i style={{width:`${paidPct}%`}}/></div></section>
 
-      <section className={styles.card}>
-        <div className={styles.cardHead}><div><p>PAYMENTS</p><h2>Payment tracker</h2></div><IndianRupee/></div>
-        <div className={styles.progress}><div style={{width:`${paidPct}%`}}/></div>
-        <div className={styles.paymentNumbers}><span><b>{paidPct}%</b><small>paid</small></span><span><b>₹{remaining.toLocaleString('en-IN')}</b><small>remaining</small></span></div>
-        <label className={styles.paymentInput}><span>Total paid so far</span><div><span>₹</span><input type="number" min="0" max={CONTRACT_TOTAL} value={paid} onChange={e=>setPaid(Math.max(0,Math.min(Number(e.target.value)||0,CONTRACT_TOTAL)))}/></div></label>
-        <small className={styles.helper}>Temporary device storage. Supabase ledger comes in the data phase.</small>
-      </section>
+    <nav className={styles.tabs}>{(['overview','payments','milestones','documents','notes'] as Tab[]).map(t=><button key={t} className={tab===t?styles.active:''} onClick={()=>setTab(t)}>{t==='overview'?'Overview':t[0].toUpperCase()+t.slice(1)}</button>)}</nav>
 
-      <section className={styles.card}>
-        <div className={styles.cardHead}><div><p>PROGRESS</p><h2>Construction milestones</h2></div><Building2/></div>
-        <div className={styles.milestones}>
-          <div className={styles.current}><span>01</span><div><b>Agreement & mobilisation</b><small>Scope, timeline, labour and material commitments</small></div><em>Current</em></div>
-          <div><span>02</span><div><b>Structure & civil work</b><small>Track work against agreed drawings and quality</small></div><em>Planned</em></div>
-          <div><span>03</span><div><b>Electrical, plumbing & finishes</b><small>Record brands, quantities and defects</small></div><em>Planned</em></div>
-          <div><span>04</span><div><b>Inspection & handover</b><small>Snag list, completion proof and final payment</small></div><em>Planned</em></div>
-        </div>
-      </section>
+    {tab==='overview'&&<div className={styles.grid}>
+      <section className={styles.card}><div className={styles.cardHead}><div><p>CONTRACTOR</p><h2>Primary contact</h2></div><button onClick={()=>setContractorOpen(true)}><Pencil/></button></div><div className={styles.person}><span><UserRound/></span><div><b>{p.contractor_name||'Contractor details not added'}</b><small>{p.contractor_phone||'Add mobile'}{p.contractor_email?` · ${p.contractor_email}`:''}</small>{p.contractor_address&&<em>{p.contractor_address}</em>}</div></div><div className={styles.warning}><ShieldCheck/><span><b>Before the next payment</b><small>Confirm scope, material brands, milestone evidence, defects responsibility and handover commitment in writing.</small></span></div></section>
+      <section className={styles.card}><div className={styles.cardHead}><div><p>NEXT MILESTONE</p><h2>Construction progress</h2></div><Building2/></div>{data.milestones.filter(m=>m.status!=='completed').slice(0,2).map(m=><div className={styles.nextItem} key={m.id}><span className={styles.statusDot}/><div><b>{m.title}</b><small>{m.notes}</small><em>{m.status} · {niceDate(m.due_date)}</em></div></div>)}<button className={styles.secondary} onClick={()=>setTab('milestones')}>View milestones</button></section>
+      <section className={styles.card}><div className={styles.cardHead}><div><p>DOCUMENT CONTROL</p><h2>{docsReady}/{data.documents.length} verified</h2></div><FileCheck2/></div><div className={styles.miniList}>{data.documents.slice(0,5).map(d=><div key={d.id}><span className={`${styles.docState} ${styles[d.status]}`}/><b>{d.title}</b><em>{d.status.replace('_',' ')}</em></div>)}</div><button className={styles.secondary} onClick={()=>setTab('documents')}>Review documents</button></section>
+      <section className={styles.card}><div className={styles.cardHead}><div><p>RECENT PAYMENTS</p><h2>Money released</h2></div><IndianRupee/></div>{data.payments.length===0?<div className={styles.emptySmall}>No payments recorded yet.</div>:data.payments.slice(0,4).map(x=><div className={styles.paymentRow} key={x.id}><span><b>{money(x.amount)}</b><small>{niceDate(x.payment_date)} · {x.method||'Payment'}</small></span><em>{x.reference||'No reference'}</em></div>)}<button className={styles.primary} onClick={()=>setPaymentOpen(true)}><Plus/>Record payment</button></section>
+    </div>}
 
-      <section className={styles.card}>
-        <div className={styles.cardHead}><div><p>DOCUMENTS</p><h2>Required records</h2></div><FileCheck2/></div>
-        <div className={styles.docs}>
-          {['Signed construction agreement','Detailed scope of work','Material specification / brands','Milestone payment schedule','Contractor identity & address','Completion / handover commitment','Warranty / defect responsibility','Payment receipts'].map((x,i)=><div key={x}><CheckCircle2/><span>{x}</span><em>{i<1?'Priority':'Required'}</em></div>)}
-        </div>
-      </section>
+    {tab==='payments'&&<section className={styles.panel}><div className={styles.panelHead}><div><p>PAYMENT LEDGER</p><h2>Every rupee against evidence</h2></div><button className={styles.primary} onClick={()=>setPaymentOpen(true)}><Plus/>Payment</button></div>{data.payments.length===0?<div className={styles.empty}><IndianRupee/><b>No payments recorded</b><span>Record each release against a date, method and milestone.</span></div>:<div className={styles.ledger}>{data.payments.map(x=><article key={x.id}><div><b>{money(x.amount)}</b><small>{niceDate(x.payment_date)} · {x.method||'Payment'}</small>{x.notes&&<span>{x.notes}</span>}</div><em>{x.reference||'No reference'}</em><button onClick={()=>confirm('Delete this payment record?')&&action('payment_delete',{id:x.id})}><Trash2/></button></article>)}</div>}</section>}
 
-      <section className={styles.card}>
-        <div className={styles.cardHead}><div><p>REMINDERS</p><h2>Things to take care of</h2></div><CalendarClock/></div>
-        <div className={styles.reminders}>{reminders.map(r=><button key={r.id} className={r.done?styles.done:''} onClick={()=>setReminders(prev=>prev.map(x=>x.id===r.id?{...x,done:!x.done}:x))}><span className={styles.check}>{r.done&&<CheckCircle2/>}</span><span>{r.text}</span></button>)}</div>
-        <button className={styles.secondary} onClick={()=>setReminders(prev=>[...prev,{id:Date.now(),text:'New construction reminder',done:false}])}><Plus/> Add reminder</button>
-      </section>
+    {tab==='milestones'&&<section className={styles.panel}><div className={styles.panelHead}><div><p>MILESTONES</p><h2>Build by measurable stages</h2></div><button className={styles.primary} onClick={()=>setMilestoneOpen(true)}><Plus/>Milestone</button></div><div className={styles.milestones}>{data.milestones.map((m,i)=><article key={m.id} className={styles[m.status]}><span className={styles.number}>{String(i+1).padStart(2,'0')}</span><div><b>{m.title}</b><small>{m.notes}</small><em>{niceDate(m.due_date)}</em></div><select value={m.status} disabled={working} onChange={e=>action('milestone_update',{id:m.id,status:e.target.value})}><option value='planned'>Planned</option><option value='current'>Current</option><option value='blocked'>Blocked</option><option value='completed'>Completed</option></select></article>)}</div></section>}
 
-      <section className={styles.card}>
-        <div className={styles.cardHead}><div><p>PRIVATE NOTES</p><h2>Notes to myself</h2></div><NotebookPen/></div>
-        <div className={styles.noteBox}><textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="e.g. Ask contractor to send photos before releasing the next milestone payment."/><button onClick={addNote}><Plus/> Save note</button></div>
-        <div className={styles.noteList}>{notes.length===0?<p>No notes yet.</p>:notes.map(n=><div key={n.id}><b>{n.text}</b><small>{n.created}</small></div>)}</div>
-      </section>
-    </div>
+    {tab==='documents'&&<section className={styles.panel}><div className={styles.panelHead}><div><p>DOCUMENTS</p><h2>Contract and evidence checklist</h2></div><FileCheck2/></div><div className={styles.documents}>{data.documents.map(d=><article key={d.id}><FileCheck2/><div><b>{d.title}</b><small>{d.category}</small></div><select value={d.status} disabled={working} onChange={e=>action('document_update',{id:d.id,status:e.target.value,notes:d.notes||''})}><option value='required'>Required</option><option value='received'>Received</option><option value='verified'>Verified</option><option value='not_applicable'>N/A</option></select></article>)}</div></section>}
+
+    {tab==='notes'&&<section className={styles.panel}><div className={styles.panelHead}><div><p>PROJECT LOG</p><h2>Notes, risks, decisions and actions</h2></div><NotebookPen/></div><form className={styles.noteForm} onSubmit={saveNote}><select value={noteType} onChange={e=>setNoteType(e.target.value as NoteRow['note_type'])}><option value='note'>Note</option><option value='risk'>Risk</option><option value='decision'>Decision</option><option value='action'>Action</option></select><textarea value={note} onChange={e=>setNote(e.target.value)} placeholder='e.g. Contractor must send slab photos before next payment.'/><button className={styles.primary} disabled={working||!note.trim()}><Save/>Save</button></form><div className={styles.notes}>{data.notes.length===0?<div className={styles.emptySmall}>No project log entries yet.</div>:data.notes.map(n=><article key={n.id} className={styles[n.note_type]}><div><em>{n.note_type}</em><b>{n.note}</b><small>{new Date(n.created_at).toLocaleString('en-NZ')}</small></div><button onClick={()=>action('note_delete',{id:n.id})}><Trash2/></button></article>)}</div></section>}
+
+    {contractorOpen&&<div className={styles.modalBackdrop}><form className={styles.modal} onSubmit={saveContractor}><div className={styles.modalHead}><div><p>CONTRACTOR</p><h2>Verified contact details</h2></div><button type='button' onClick={()=>setContractorOpen(false)}><X/></button></div><label>Name<input value={cName} onChange={e=>setCName(e.target.value)}/></label><label>Mobile<input value={cPhone} onChange={e=>setCPhone(e.target.value)}/></label><label>Email<input type='email' value={cEmail} onChange={e=>setCEmail(e.target.value)}/></label><label>Address<textarea value={cAddress} onChange={e=>setCAddress(e.target.value)}/></label><button className={styles.primary} disabled={working}><Save/>Save contractor</button></form></div>}
+
+    {paymentOpen&&<div className={styles.modalBackdrop}><form className={styles.modal} onSubmit={savePayment}><div className={styles.modalHead}><div><p>PAYMENT</p><h2>Record money released</h2></div><button type='button' onClick={()=>setPaymentOpen(false)}><X/></button></div><div className={styles.two}><label>Amount (INR)<input type='number' min='1' value={amount} onChange={e=>setAmount(e.target.value)}/></label><label>Date<input type='date' value={paymentDate} onChange={e=>setPaymentDate(e.target.value)}/></label></div><label>Milestone<select value={paymentMilestone} onChange={e=>setPaymentMilestone(e.target.value)}><option value=''>General / not linked</option>{data.milestones.map(m=><option key={m.id} value={m.id}>{m.title}</option>)}</select></label><label>Method<input value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)}/></label><label>Reference / receipt<input value={paymentRef} onChange={e=>setPaymentRef(e.target.value)}/></label><label>Notes<textarea value={paymentNotes} onChange={e=>setPaymentNotes(e.target.value)}/></label><button className={styles.primary} disabled={working||!(Number(amount)>0)}><Save/>Save payment</button></form></div>}
+
+    {milestoneOpen&&<div className={styles.modalBackdrop}><form className={styles.modal} onSubmit={addMilestone}><div className={styles.modalHead}><div><p>MILESTONE</p><h2>Add construction stage</h2></div><button type='button' onClick={()=>setMilestoneOpen(false)}><X/></button></div><label>Title<input value={mTitle} onChange={e=>setMTitle(e.target.value)}/></label><label>Due date<input type='date' value={mDue} onChange={e=>setMDue(e.target.value)}/></label><label>Acceptance / evidence required<textarea value={mNotes} onChange={e=>setMNotes(e.target.value)}/></label><button className={styles.primary} disabled={working||!mTitle.trim()}><Plus/>Add milestone</button></form></div>}
   </main>
 }

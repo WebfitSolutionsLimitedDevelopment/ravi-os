@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, BellRing, CalendarPlus, Camera, CheckCircle2, FileImage, Image as ImageIcon, Mail, Mic, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { parsePosterSemantics } from '../../lib/reminder-poster-parser'
 import styles from './reminders.module.css'
 
 type Reminder = {
@@ -270,10 +271,14 @@ export default function ReminderCentre() {
       await worker.terminate()
       const extracted = result.data.text.trim()
       if (!extracted) throw new Error('No text found')
+      const parsed = smartParse(extracted)
+      const poster = parsePosterSemantics(extracted)
       setRaw(extracted)
-      applyParsedText(extracted)
-      setNotes(`Captured from poster: ${file.name}`)
-      setOcrStatus('Poster read successfully. Review the title, date and time below, then tap Save reminder.')
+      setTitle(poster.title !== 'Event reminder' ? poster.title : parsed.title)
+      setDate(parsed.date)
+      if (parsed.time) setTime(parsed.time)
+      setNotes(poster.venue ? `${poster.venue}\nCaptured from poster: ${file.name}` : `Captured from poster: ${file.name}`)
+      setOcrStatus('Poster read successfully. I picked the event name, date, time and venue. Review them below, then tap Save reminder.')
     } catch {
       setOcrStatus('I could not read this poster clearly. You can still type or paste the key details below and save the reminder.')
     }

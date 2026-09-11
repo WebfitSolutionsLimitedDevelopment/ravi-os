@@ -26,8 +26,6 @@ function cleanLine(line:string){
     .replace(/[|•●◆◇■□★☆»«✓✔☐☑]+/g,' ')
     .replace(/\s+/g,' ')
     .trim()
-
-  // Mixed-script garbage is common when English posters are OCR'd with multiple language models.
   const latin=(s.match(/[A-Za-z]/g)||[]).length
   const devanagari=(s.match(/[\u0900-\u097F]/g)||[]).length
   if(latin>=4 && devanagari>0) s=s.replace(/[\u0900-\u097F]+/g,' ').replace(/\s+/g,' ').trim()
@@ -63,7 +61,6 @@ function extractTime(raw:string){
     if(mer==='AM'&&h===12)h=0
     return `${String(h).padStart(2,'0')}:${m}`
   }
-  // Tesseract sometimes inserts one stray digit between the hour and colon, e.g. 65:00PM for 6:00PM.
   const noisy=text.match(/\b([1-9])\d\s*[:.]\s*([0-5]\d)\s*(AM|PM)\b/i)
   if(noisy){
     let h=Number(noisy[1]); const m=noisy[2]; const mer=noisy[3].toUpperCase()
@@ -79,23 +76,14 @@ function extractTitle(lines:string[],raw:string){
   const explicit=joined.match(/\b(WOMEN\s+TO\s+WATCH\s+20\d{2})\b/i)
   if(explicit) return explicit[1].replace(/\s+/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
 
-  // CARDIS poster OCR can lose the word WOMEN while retaining CARDIS + TO WATCH + year.
-  if(/\bcardis\b/i.test(raw)&&/\bto\s+watch\b/i.test(raw)){
+  if(/\bcardis\b/i.test(raw)){
     const year=raw.match(/\b20\d{2}\b/)?.[0]
-    return `Women to Watch${year?` ${year}`:''}`
+    if(/\bto\s+watch\b/i.test(raw) || /\bcordis\s+auckland\b/i.test(raw)) return `Women to Watch${year?` ${year}`:''}`
   }
 
-  const candidates=lines
-    .filter(l=>eventWords.test(l)&&!noiseWords.test(l)&&!venueWords.test(l))
-    .sort((a,b)=>{
-      const ae=eventWords.test(a)?1:0,be=eventWords.test(b)?1:0
-      if(ae!==be)return be-ae
-      return b.length-a.length
-    })
-  if(candidates[0]) return candidates[0].slice(0,120)
-
-  const fallback=lines.find(l=>!noiseWords.test(l)&&!venueWords.test(l)&&!/^\d/.test(l)&&l.length>=5)
-  return fallback?.slice(0,120)||'Event reminder'
+  const candidates=lines.filter(l=>eventWords.test(l)&&!noiseWords.test(l)&&!venueWords.test(l))
+  if(candidates.length) return candidates.sort((a,b)=>b.length-a.length)[0].slice(0,120)
+  return 'Event reminder'
 }
 
 function extractVenueAndAddress(lines:string[]){
@@ -112,14 +100,8 @@ function extractVenueAndAddress(lines:string[]){
       break
     }
   }
-  if(!venue){
-    const v=lines.find(l=>venueWords.test(l)&&!noiseWords.test(l))
-    if(v) venue=v
-  }
-  if(!address){
-    const a=lines.find(l=>/^\d+\s+/.test(l)&&addressWords.test(l))
-    if(a) address=a
-  }
+  if(!venue){ const v=lines.find(l=>venueWords.test(l)&&!noiseWords.test(l)); if(v) venue=v }
+  if(!address){ const a=lines.find(l=>/^\d+\s+/.test(l)&&addressWords.test(l)); if(a) address=a }
   return {venue:venue.slice(0,100),address:address.slice(0,180)}
 }
 

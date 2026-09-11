@@ -13,6 +13,7 @@ function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue
 function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)return styles.urgent;if(h<=48)return styles.tomorrow;if(h<=72)return styles.soon;return styles.later}
 function dueAt(date:string,time:string){return new Date(`${date}T${time}:00`).toISOString()}
 function formatClock(now:Date,timeZone:string){return new Intl.DateTimeFormat('en-NZ',{timeZone,hour:'numeric',minute:'2-digit'}).format(now)}
+function GeetPhoto({small=false}:{small?:boolean}){return <div className={small?styles.profilePhotoSmall:styles.profilePhoto}><img src={GEET_PHOTO_DATA_URI} alt="Geet"/></div>}
 
 export default function GeetPage(){
   const[auth,setAuth]=useState<boolean|null>(null);const[pin,setPin]=useState('');const[loginError,setLoginError]=useState('')
@@ -35,10 +36,10 @@ export default function GeetPage(){
   async function remove(id:string){if(!confirm('Delete this reminder?'))return;const r=await fetch(`/api/reminders/${id}`,{method:'DELETE'});if(r.ok)await load()}
 
   if(auth===null)return <main className={styles.loginShell}><div className={styles.loading}>Opening shared reminders…</div></main>
-  if(!auth)return <main className={styles.loginShell}><section className={styles.loginCard}><img className={styles.loginPhoto} src={GEET_PHOTO_DATA_URI} alt="Geet"/><p>SHARED FAMILY REMINDERS</p><h1>Hi Geet 👋</h1><span>Enter your PIN to open Ravi & Geet reminders.</span><form onSubmit={login}><label><LockKeyhole/>PIN</label><input autoFocus inputMode="numeric" type="password" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,'').slice(0,12))} placeholder="Enter PIN"/>{loginError&&<small className={styles.error}>{loginError}</small>}<button disabled={!pin}>Open reminders</button></form></section></main>
+  if(!auth)return <main className={styles.loginShell}><section className={styles.loginCard}><GeetPhoto/><p>SHARED FAMILY REMINDERS</p><h1>Hi Geet 👋</h1><span>Enter your PIN to open Ravi & Geet reminders.</span><form onSubmit={login}><label><LockKeyhole/>PIN</label><input autoFocus inputMode="numeric" type="password" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,'').slice(0,12))} placeholder="Enter PIN"/>{loginError&&<small className={styles.error}>{loginError}</small>}<button disabled={!pin}>Open reminders</button></form></section></main>
 
   return <main className={styles.shell}>
-    <header className={styles.top}><div className={styles.identity}><img src={GEET_PHOTO_DATA_URI} alt="Geet"/><div><p>RAVI + GEET</p><h1>Our reminders</h1><span>Nearest reminder always comes first.</span></div></div><button onClick={logout} aria-label="Sign out"><LogOut/></button></header>
+    <header className={styles.top}><div className={styles.identity}><GeetPhoto small/><div><p>RAVI + GEET</p><h1>Our reminders</h1><span>Nearest reminder always comes first.</span></div></div><button onClick={logout} aria-label="Sign out"><LogOut/></button></header>
     <section className={styles.clocks}><div><Clock3/><span><small>AUCKLAND</small><b>{formatClock(now,'Pacific/Auckland')}</b></span></div><div><Clock3/><span><small>INDIA</small><b>{formatClock(now,'Asia/Kolkata')}</b></span></div></section>
     {syncError&&<div className={styles.syncWarning}><b>Shared sync issue</b><span>{syncError}</span></div>}
     <button className={styles.add} onClick={openAdd}><Plus/>Add reminder</button>

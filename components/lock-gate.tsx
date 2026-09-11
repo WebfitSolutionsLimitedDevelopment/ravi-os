@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { LockKeyhole, ShieldCheck } from 'lucide-react'
+import ReminderSyncBootstrap from './reminder-sync-bootstrap'
 import styles from './lock-gate.module.css'
 
 export default function LockGate({ children }: { children: React.ReactNode }) {
@@ -27,7 +28,7 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
     e.preventDefault();setSubmitting(true);setError('')
     try {
       const response = await fetch('/api/auth', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ pin })})
-      if (!response.ok) {setError('Incorrect PIN. Please try again.');setPin('');return}
+      if (!response.ok) {setError('Unable to unlock. Please check the PIN and try again.');setPin('');return}
       setAuthenticated(true);setPin('')
     } catch {setError('Unable to unlock Ravi OS right now.')} finally {setSubmitting(false)}
   }
@@ -46,5 +47,5 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
       <div className={styles.privacy}><ShieldCheck size={15}/><span>Private by design · Search indexing disabled</span></div>
     </section>
   </main>
-  return <>{children}</>
+  return <><ReminderSyncBootstrap/>{children}</>
 }

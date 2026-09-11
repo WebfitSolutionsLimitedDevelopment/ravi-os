@@ -1,6 +1,7 @@
 import './globals.css'
 import './home-reminders.css'
 import LockGate from '../components/lock-gate'
+import TaskNavigationBridge from '../components/task-navigation-bridge'
 
 export const metadata = {
   title: 'Ravi OS',
@@ -11,7 +12,7 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body><LockGate>{children}</LockGate></body>
+      <body><LockGate>{children}</LockGate><TaskNavigationBridge/></body>
     </html>
   )
 }

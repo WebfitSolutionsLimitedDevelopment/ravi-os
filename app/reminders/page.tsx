@@ -3,8 +3,7 @@
 import Link from 'next/link'
 import { ChangeEvent, useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, BellRing, CalendarPlus, Camera, ChevronRight, Edit3, FileImage, Image as ImageIcon, Plus, Save, Trash2, X } from 'lucide-react'
-import { parsePosterSemantics } from '../../lib/reminder-poster-parser'
-import { readPosterText } from '../../lib/poster-ocr-client'
+import { extractPosterFields } from '../../lib/poster-extract-client'
 import styles from './reminders.module.css'
 
 type Reminder={id:string;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;posterUrl?:string;createdBy?:string;legacyClientId?:string;notified?:boolean}
@@ -15,7 +14,6 @@ function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)retu
 function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue';const m=Math.max(1,Math.round(d/60000));if(m<60)return`${m}m left`;const h=Math.floor(m/60);if(h<24)return`${h}h ${m%60}m left`;const days=Math.floor(h/24);return`${days}d ${h%24}h left`}
 function dueAt(date:string,time:string){return new Date(`${date}T${time}:00`).toISOString()}
 function calendarUrl(r:Reminder){const start=new Date(`${r.date}T${r.time}:00`);const end=new Date(start.getTime()+1800000);const fmt=(d:Date)=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z');const p=new URLSearchParams({action:'TEMPLATE',text:r.title,dates:`${fmt(start)}/${fmt(end)}`,details:r.notes||'Created from Ravi OS',ctz:'Pacific/Auckland'});return`https://calendar.google.com/calendar/render?${p.toString()}`}
-function posterPreview(file:File):Promise<string>{return new Promise(resolve=>{const fr=new FileReader();fr.onload=()=>resolve(String(fr.result||''));fr.onerror=()=>resolve('');fr.readAsDataURL(file)})}
 
 export default function ReminderCentre(){
   const[reminders,setReminders]=useState<Reminder[]>([]);const[loading,setLoading]=useState(true);const[formOpen,setFormOpen]=useState(false);const[editing,setEditing]=useState<string|null>(null)
@@ -31,7 +29,21 @@ export default function ReminderCentre(){
   const edit=(r:Reminder)=>{setEditing(r.id);setTitle(r.title);setDate(r.date);setTime(r.time);setVenue(r.notes||'');setImageName(r.imageName||'');setImageData('');setFormOpen(true);window.scrollTo({top:0,behavior:'smooth'})}
   const requestNotifications=async()=>{if(!('Notification'in window)){setNotificationStatus('Use Calendar alerts on this browser');return}const p=await Notification.requestPermission();setNotificationStatus(p==='granted'?'Enabled on this device':'Permission not granted')}
 
-  async function onPoster(e:ChangeEvent<HTMLInputElement>){const file=e.target.files?.[0];if(!file)return;setWorking(true);setMessage('Reading event title, date, time and venue…');setImageName(file.name);setImageData(await posterPreview(file));setTitle('');setDate('');setTime('');setVenue('');try{const text=await readPosterText(file);const p=parsePosterSemantics(text);setTitle(p.title==='Event reminder'?'':p.title);setDate(p.date||'');setTime(p.time||'');setVenue([p.venue,p.address].filter(Boolean).join(', '));setMessage(p.title==='Event reminder'||!p.date||!p.time?'I could not confidently read every field. Please check the blanks before saving.':'Poster read. Check the five fields once, then save.')}catch{setMessage('I could not read this poster reliably. Please enter the five fields manually.')}finally{setWorking(false)}}
+  async function onPoster(e:ChangeEvent<HTMLInputElement>){
+    const file=e.target.files?.[0];if(!file)return
+    setWorking(true);setMessage('Reading the event poster…');setImageName(file.name);setTitle('');setDate('');setTime('');setVenue('')
+    try{
+      const p=await extractPosterFields(file)
+      setImageData(p.imageDataUrl)
+      setTitle(p.title==='Event reminder'?'':p.title)
+      setDate(p.date||'')
+      setTime(p.time||'')
+      setVenue([p.venue,p.address].filter(Boolean).join(', '))
+      const complete=Boolean(p.title&&p.title!=='Event reminder'&&p.date&&p.time)
+      setMessage(complete?'Poster read. Check once and save.':'I could not confidently read every field. Please fill only the missing field(s), then save.')
+    }catch{setImageData('');setMessage('I could not read this poster reliably. Please enter the event title, date, time and venue.')}
+    finally{setWorking(false)}
+  }
   async function save(){if(!title.trim()||!date||!time)return;setWorking(true);setMessage('Saving…');const body={title:title.trim(),notes:venue.trim(),date,time,dueAt:dueAt(date,time),source:imageName?'image':'text',imageName:imageName||undefined,imageDataUrl:imageData||undefined};const r=await fetch(editing?`/api/reminders/${editing}`:'/api/reminders',{method:editing?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.ok){await load();setFormOpen(false);reset()}else setMessage('Could not save reminder. Please try again.');setWorking(false)}
   async function remove(id:string){if(!confirm('Delete this reminder?'))return;const r=await fetch(`/api/reminders/${id}`,{method:'DELETE'});if(r.ok)await load()}
 

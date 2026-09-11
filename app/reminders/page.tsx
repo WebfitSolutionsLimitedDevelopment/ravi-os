@@ -93,9 +93,11 @@ function smartParse(input: string) {
   const m = lower.match(/(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)/)
   if (m) {
     let h = Number(m[1]); const mins = m[2] || '00'; const meridiem = m[3].replace(/\./g,'')
-    if (meridiem === 'pm' && h < 12) h += 12
-    if (meridiem === 'am' && h === 12) h = 0
-    time = `${String(h).padStart(2,'0')}:${mins}`
+    if (h <= 12) {
+      if (meridiem === 'pm' && h < 12) h += 12
+      if (meridiem === 'am' && h === 12) h = 0
+      time = `${String(h).padStart(2,'0')}:${mins}`
+    }
   } else {
     const twentyFour = lower.match(/(?:समय|time)?\s*[:\-]?\s*([01]?\d|2[0-3]):([0-5]\d)/)
     if (twentyFour) time = `${twentyFour[1].padStart(2,'0')}:${twentyFour[2]}`
@@ -135,6 +137,12 @@ function makePosterPreview(file: File): Promise<string> {
   })
 }
 
+function englishQuality(text:string){
+  const latin=(text.match(/[A-Za-z]/g)||[]).length
+  const words=(text.match(/\b[A-Za-z]{3,}\b/g)||[]).length
+  return latin>=40 && words>=8
+}
+
 async function showReminderNotification(reminder: Reminder) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return
   const body = reminder.notes || `Reminder scheduled for ${reminder.time}`
@@ -172,18 +180,45 @@ export default function ReminderCentre() {
 
   const onImage=async(e:ChangeEvent<HTMLInputElement>)=>{
     const file=e.target.files?.[0];if(!file)return
-    setImageName(file.name);setSource('image');setSavedMessage('');setOcrStatus('Reading English and Hindi text from poster…')
+    setImageName(file.name);setSource('image');setSavedMessage('');setOcrStatus('Reading poster…')
     const preview=await makePosterPreview(file);setImagePreview(preview)
-    try{const{createWorker}=await import('tesseract.js');const worker=await createWorker(['eng','hin']);const result=await worker.recognize(file);await worker.terminate();const extracted=result.data.text.trim();if(!extracted)throw new Error('No text');const parsed=smartParse(extracted);const poster=parsePosterSemantics(extracted);setRaw(extracted);setTitle(poster.title!=='Event reminder'?poster.title:parsed.title);setDate(parsed.date);if(parsed.time)setTime(parsed.time);setNotes(poster.venue?`${poster.venue}\nCaptured from poster: ${file.name}`:`Captured from poster: ${file.name}`);setOcrStatus('Poster read successfully. Review the title, date and time below, then save.')}catch{setOcrStatus('I could not read this poster clearly. Type the key details below and save the reminder.')}
+    try{
+      const {createWorker}=await import('tesseract.js')
+      const engWorker=await createWorker('eng')
+      const engResult=await engWorker.recognize(file)
+      await engWorker.terminate()
+      let extracted=engResult.data.text.trim()
+
+      if(!englishQuality(extracted)){
+        const mixedWorker=await createWorker(['eng','hin'])
+        const mixedResult=await mixedWorker.recognize(file)
+        await mixedWorker.terminate()
+        const mixed=mixedResult.data.text.trim()
+        if(mixed.length>extracted.length) extracted=mixed
+      }
+
+      if(!extracted)throw new Error('No text')
+      const fallback=smartParse(extracted)
+      const poster=parsePosterSemantics(extracted)
+      setRaw(extracted)
+      setTitle(poster.title!=='Event reminder'?poster.title:fallback.title)
+      setDate(poster.date||fallback.date)
+      setTime(poster.time||fallback.time||'19:00')
+      const place=[poster.venue,poster.address].filter(Boolean).join('\n')
+      setNotes(place)
+      setOcrStatus('Poster prepared. Check only the event title, date, time and venue, then save.')
+    }catch{
+      setOcrStatus('I could not read this poster clearly. Enter the event title, date, time and venue manually.')
+    }
   }
 
   return <main className={styles.shell}>
     <header className={styles.header}><Link href="/" className={styles.back}><ArrowLeft/> Ravi OS</Link><div className={styles.heading}><p>REMINDER CENTRE</p><h1>Capture it once. Don’t forget it.</h1><span>Type, speak, or choose a poster. Review the details, then save.</span></div><button onClick={requestNotifications} className={styles.notify}><BellRing/><span><b>Phone alerts</b><small>{notificationStatus}</small></span></button></header>
-    <section className={styles.statusStrip}><div><CheckCircle2/><span><b>English + Hindi posters</b><small>OCR reads both languages</small></span></div><div><BellRing/><span><b>Device alerts</b><small>{notificationStatus}</small></span></div><div><CalendarPlus/><span><b>Calendar-ready</b><small>Google Calendar handoff</small></span></div></section>
+    <section className={styles.statusStrip}><div><CheckCircle2/><span><b>English + Hindi posters</b><small>English first, Hindi when needed</small></span></div><div><BellRing/><span><b>Device alerts</b><small>{notificationStatus}</small></span></div><div><CalendarPlus/><span><b>Calendar-ready</b><small>Google Calendar handoff</small></span></div></section>
 
     <section className={styles.captureGrid}>
       <div className={styles.captureCard}><div className={styles.captureHead}><span><Sparkles/></span><div><p>STEP 1</p><h2>Add what you need to remember</h2></div></div><textarea value={raw} onChange={e=>{setRaw(e.target.value);setSource('text')}} placeholder="Type here, use your phone keyboard microphone, or choose a poster below…"/><div className={styles.captureActions}><button onClick={startVoice} className={listening?styles.listening:''}><Mic/>{listening?'Listening…':'Speak'}</button><label><ImageIcon/>Browse library<input type="file" accept="image/*" onChange={onImage}/></label><label><Camera/>Use camera<input type="file" accept="image/*" capture="environment" onChange={onImage}/></label><button className={styles.analyse} onClick={analyse}><Sparkles/>Prepare reminder</button></div>{imagePreview&&<div className={styles.previewWrap}><img src={imagePreview} alt="Selected poster"/><div><FileImage/><span><b>{imageName}</b><small>{ocrStatus||'Image ready'}</small></span></div></div>}</div>
-      <div className={styles.confirmCard}><div className={styles.confirmHead}><div><p>STEP 2</p><h2>Review reminder</h2></div><span>Confirm before saving</span></div><label>What is the reminder?<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Reminder title"/></label><div className={styles.two}><label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label>Time<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label></div><label>Extra details<textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Venue, address, person, what to carry…"/></label><button className={styles.create} onClick={createReminder}><Plus/>Save reminder</button>{savedMessage&&<div className={styles.saved}><CheckCircle2/>{savedMessage}</div>}</div>
+      <div className={styles.confirmCard}><div className={styles.confirmHead}><div><p>STEP 2</p><h2>Review reminder</h2></div><span>Confirm before saving</span></div><label>What is the reminder?<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Event title"/></label><div className={styles.two}><label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label>Time<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label></div><label>Venue<input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Venue name and address"/></label><button className={styles.create} onClick={createReminder}><Plus/>Save reminder</button>{savedMessage&&<div className={styles.saved}><CheckCircle2/>{savedMessage}</div>}</div>
     </section>
 
     <section className={styles.delivery}><div><BellRing/><span><b>Ravi OS notification</b><small>Works while Ravi OS is active where supported.</small></span></div><div><CalendarPlus/><span><b>Google Calendar</b><small>Add to Calendar for reliable phone alerts.</small></span></div><div><Mail/><span><b>Email delivery</b><small>Server-side delivery will be added with persistent reminders.</small></span></div></section>

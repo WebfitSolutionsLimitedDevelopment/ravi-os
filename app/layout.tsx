@@ -1,4 +1,5 @@
 import './globals.css'
+import './home-reminders.css'
 import LockGate from '../components/lock-gate'
 
 export const metadata = {

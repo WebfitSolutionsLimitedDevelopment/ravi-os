@@ -4,7 +4,7 @@ import './home-polish.css'
 import LockGate from '../components/lock-gate'
 import TaskNavigationBridge from '../components/task-navigation-bridge'
 import HomePolishBridge from '../components/home-polish-bridge'
-import WaitingForNavigationBridge from '../components/waiting-for-navigation-bridge'
+import FamilyNavigationBridge from '../components/family-navigation-bridge'
 
 export const metadata = {
   title: 'Ravi OS',
@@ -15,7 +15,7 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body><LockGate>{children}</LockGate><TaskNavigationBridge/><HomePolishBridge/><WaitingForNavigationBridge/></body>
+      <body><LockGate>{children}</LockGate><TaskNavigationBridge/><HomePolishBridge/><FamilyNavigationBridge/></body>
     </html>
   )
 }

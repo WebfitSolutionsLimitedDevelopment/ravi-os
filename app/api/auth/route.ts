@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import { createHash, timingSafeEqual } from 'crypto'
-import { familyLogin, familyLogout, setFamilySession } from '../../../lib/server/family-reminder-client'
+import { familyLogin, familyLogout, hasFamilySession, setFamilySession } from '../../../lib/server/family-reminder-client'
 
 const cookieName = 'ravi_os_session'
 const pin = process.env.RAVI_OS_PIN || '1234'
@@ -15,8 +15,9 @@ export async function GET() {
   const store = await cookies()
   const current = store.get(cookieName)?.value || ''
   const expected = token()
-  const valid = current.length === expected.length && timingSafeEqual(Buffer.from(current), Buffer.from(expected))
-  return NextResponse.json({ authenticated: valid })
+  const appValid = current.length === expected.length && timingSafeEqual(Buffer.from(current), Buffer.from(expected))
+  const familyValid = appValid ? await hasFamilySession() : false
+  return NextResponse.json({ authenticated: appValid && familyValid })
 }
 
 export async function POST(request: Request) {

@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from 'crypto'
 
 const RAVI_COOKIE='ravi_os_session'
 const GEET_COOKIE='ravi_os_geet_session'
-const DEFAULT_GEET_PIN_HASH='198c1f04a6a2e1a39d81716eca39b9b65ef738a390d2ca04a8afbf1d348d7418'
+const DEFAULT_GEET_PIN_HASH='d63913da34eea699679157b8e78201e2ec17c1ccf2df82021221e5573bc3353b'
 
 function safeEqual(a:string,b:string){
   return a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b))

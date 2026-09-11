@@ -24,6 +24,10 @@ export async function setFamilySession(token:string){
   store.set(FAMILY_COOKIE,token,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'strict',path:'/',maxAge:60*60*24*30})
 }
 
+export async function hasFamilySession(){
+  const store=await cookies();return Boolean(store.get(FAMILY_COOKIE)?.value)
+}
+
 export async function clearFamilySession(){
   const store=await cookies();store.delete(FAMILY_COOKIE)
 }

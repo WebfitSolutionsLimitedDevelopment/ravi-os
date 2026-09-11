@@ -9,6 +9,7 @@ const seededTitles=new Set([
 ])
 
 function goTasks(){window.location.assign('/tasks')}
+function goCalendar(){window.location.assign('/calendar')}
 
 export default function TaskNavigationBridge(){
   useEffect(()=>{
@@ -58,10 +59,14 @@ export default function TaskNavigationBridge(){
       const text=(button.textContent||'').replace(/\s+/g,' ').trim()
       const inBottom=Boolean(button.closest('.bottomNav'))
       const inSide=Boolean(button.closest('.sideNav'))
-      const isSummary=button.classList.contains('summaryCard')&&text.includes('OPEN TASKS')
+      const isSummary=button.classList.contains('summaryCard')
       const isQuickTask=Boolean(button.closest('.actionGrid'))&&/^Task\b/i.test(text)
-      if((inBottom&&/^Tasks\b/i.test(text))||(inSide&&/^Tasks\b/i.test(text))||isSummary||isQuickTask){
-        event.preventDefault();event.stopPropagation();goTasks()
+
+      if((inBottom&&/^Tasks\b/i.test(text))||(inSide&&/^Tasks\b/i.test(text))||(isSummary&&text.includes('OPEN TASKS'))||isQuickTask){
+        event.preventDefault();event.stopPropagation();goTasks();return
+      }
+      if((inBottom&&/^Calendar\b/i.test(text))||(inSide&&/^Calendar\b/i.test(text))||(isSummary&&text.includes('Calendar'))){
+        event.preventDefault();event.stopPropagation();goCalendar()
       }
     }
 

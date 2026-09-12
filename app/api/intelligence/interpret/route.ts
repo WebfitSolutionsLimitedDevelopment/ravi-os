@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server'
 import { reminderActor } from '../../../../lib/server/ravi-os-auth'
 import { intelligenceAction } from '../../../../lib/server/intelligence-client'
+import { aiEngineAvailable, aiJson } from '../../../../lib/server/ai-client'
 
 const DOMAINS=['general','finance','career','email','tasks','journal','family','projects','health']
 const RISKS=['low','medium','high','critical']
-function cleanJson(text:string){return text.trim().replace(/^```json\s*/i,'').replace(/```$/,'').trim()}
 function nzToday(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
 function addDays(date:string,days:number){const d=new Date(`${date}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10)}
 function monthNumber(name:string){const months=['january','february','march','april','may','june','july','august','september','october','november','december'];return months.indexOf(name.toLowerCase())+1}
@@ -45,8 +45,7 @@ export async function POST(request:Request){
   const today=nzToday()
   const basic=parseReminder(text,today)
   if(basic){const actionId=await record(source,text,basic);return NextResponse.json({...basic,actionId,engine:'local'})}
-  const apiKey=process.env.OPENAI_API_KEY
-  if(!apiKey)return NextResponse.json({domain:'general',intent:'unsupported_without_ai',summary:'This command needs advanced interpretation. Routine reminders still work without the AI provider.',confidence:0.35,riskLevel:'low',requiresApproval:false,payload:{},engine:'local'})
+  if(!aiEngineAvailable())return NextResponse.json({domain:'general',intent:'unsupported_without_ai',summary:'This command needs advanced interpretation. Routine reminders still work without the AI provider.',confidence:0.35,riskLevel:'low',requiresApproval:false,payload:{},engine:'local'})
   const system=`You are Ravi OS Intelligence Router. Understand one personal command and propose a governed action. Never silently execute. Date in Auckland: ${today}. Return ONLY JSON: {"domain":"general|finance|career|email|tasks|journal|family|projects|health","intent":"short_snake_case","summary":"one-line interpretation","confidence":0.0,"riskLevel":"low|medium|high|critical","requiresApproval":true,"payload":{}}.
 Intent conventions:
 - finance transaction: add_finance_transaction {type:"income|expense|payment|transfer|asset|liability|adjustment",amount:number|null,currency:string,category:string,merchant:string,date:"YYYY-MM-DD",notes:string}. Never invent amount.
@@ -61,16 +60,12 @@ Intent conventions:
 - career: domain=career intent=career_advice {question:string,focus:string}.
 Governance: sends, replies, deletes, payments, transfers, commitments and account changes are high risk and require approval. Notes and wellness logs may be low risk but still present for review. Tasks/family commitments are medium risk and require approval. Complete personal reminders may be low risk. If ambiguous, lower confidence and preserve uncertainty instead of inventing facts.`
   try{
-    const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-5.6-luna',input:[{role:'system',content:[{type:'input_text',text:system}]},{role:'user',content:[{type:'input_text',text}]}],max_output_tokens:1100})})
-    if(!r.ok)throw new Error(await r.text())
-    const data=await r.json()
-    const output=String(data.output_text||data.output?.flatMap((x:any)=>x.content||[]).map((x:any)=>x.text||'').join('')||'')
-    const parsed=JSON.parse(cleanJson(output))
+    const {data:parsed,engine}=await aiJson<any>({system,input:text,maxTokens:1100})
     const domain=DOMAINS.includes(parsed.domain)?parsed.domain:'general'
     const confidence=Math.max(0,Math.min(1,Number(parsed.confidence||0)))
     const riskLevel=RISKS.includes(parsed.riskLevel)?parsed.riskLevel:'medium'
     const result={domain,intent:String(parsed.intent||'unknown'),summary:String(parsed.summary||''),confidence,riskLevel,requiresApproval:parsed.requiresApproval!==false,payload:parsed.payload&&typeof parsed.payload==='object'?parsed.payload:{}}
     const actionId=await record(source,text,result)
-    return NextResponse.json({...result,actionId,engine:'openai'})
-  }catch{return NextResponse.json({error:'Unable to interpret that command right now'},{status:500})}
+    return NextResponse.json({...result,actionId,engine})
+  }catch(e){return NextResponse.json({error:e instanceof Error?e.message:'Unable to interpret that command right now'},{status:500})}
 }

@@ -8,16 +8,24 @@ const DEFAULT_GEET_PIN_HASH='d63913da34eea699679157b8e78201e2ec17c1ccf2df8202122
 function safeEqual(a:string,b:string){
   return a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b))
 }
+let warnedWeakAuth=false
+function warnIfWeak(missing:string){
+  if(process.env.NODE_ENV==='production'&&!warnedWeakAuth){warnedWeakAuth=true;console.error(`[ravi-os-auth] SECURITY: ${missing} is not set in this production environment — falling back to a well-known default value. Set it in your Vercel project's environment variables.`)}
+}
 function raviToken(){
+  if(!process.env.RAVI_OS_PIN)warnIfWeak('RAVI_OS_PIN')
+  if(!process.env.RAVI_OS_AUTH_SECRET)warnIfWeak('RAVI_OS_AUTH_SECRET')
   const pin=process.env.RAVI_OS_PIN||'1234'
   const secret=process.env.RAVI_OS_AUTH_SECRET||'ravi-os-phase2-temporary-secret'
   return createHash('sha256').update(`${pin}:${secret}`).digest('hex')
 }
 function geetToken(){
+  if(!process.env.RAVI_OS_AUTH_SECRET)warnIfWeak('RAVI_OS_AUTH_SECRET')
   const secret=process.env.RAVI_OS_AUTH_SECRET||'ravi-os-phase2-temporary-secret'
   return createHash('sha256').update(`geet:${secret}`).digest('hex')
 }
 export function verifyGeetPin(pin:string){
+  if(!process.env.GEET_PIN_HASH)warnIfWeak('GEET_PIN_HASH')
   const supplied=createHash('sha256').update(pin).digest('hex')
   const expected=process.env.GEET_PIN_HASH||DEFAULT_GEET_PIN_HASH
   return safeEqual(supplied,expected)

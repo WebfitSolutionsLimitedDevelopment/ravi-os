@@ -164,6 +164,7 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  const mediaRecorderRef=useRef<any>(null);const chunksRef=useRef<Blob[]>([])
  const oneShotRecognitionRef=useRef<any>(null)
  const assistantModeRef=useRef(false);const recognitionRef=useRef<any>(null);const manualStopRef=useRef(false);const iosLoopPausedRef=useRef(true);const busyAssistantRef=useRef(false);const awaitingCommandRef=useRef(false);const awaitingTimeoutRef=useRef<any>(null);const greetedRef=useRef(false)
+ const mutedRef=useRef(false);const wakeBufferRef=useRef('');const wakeBufferTimeoutRef=useRef<any>(null)
  const lastQueryRef=useRef<{topics:string[];scope:string}|null>(null)
  const historyRef=useRef<{role:'user'|'assistant';content:string}[]>([])
  useEffect(()=>setPath(window.location.pathname),[])
@@ -334,6 +335,11 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  // ---- "Hey Ravi" always-on assistant mode ----
  // Speaks a reply using a realistic server-side voice (OpenAI TTS) when
  // available, falling back to the browser's built-in voice otherwise.
+ // While speaking, the recognizer is only MUTED (results ignored), never
+ // stopped/restarted — stopping and restarting a continuous recognizer
+ // takes real time on a phone (several hundred ms, sometimes more), and
+ // doing that on every single reply is what made responses feel laggy
+ // and cost the first word or two of whatever was said right after.
  async function speak(text:string):Promise<void>{
   pauseListening()
   try{
@@ -351,23 +357,34 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
     return
    }
   }catch{}
-  await new Promise<void>(resolve=>{
+  await speakLocal(text)
+  resumeListening()
+ }
+ // Instant, network-free acknowledgement for latency-critical moments
+ // (the wake-word reply) — quality matters far less than speed here, and
+ // a round trip to fetch server TTS is exactly the kind of gap that made
+ // "Hey Ravi" feel unresponsive.
+ async function speakFast(text:string):Promise<void>{
+  pauseListening()
+  await speakLocal(text)
+  resumeListening()
+ }
+ function speakLocal(text:string):Promise<void>{
+  return new Promise<void>(resolve=>{
    if(!('speechSynthesis' in window)){resolve();return}
    try{window.speechSynthesis.cancel()}catch{}
    const u=new SpeechSynthesisUtterance(text)
-   u.lang='en-NZ'
+   u.lang='en-NZ';u.rate=1.05
    u.onend=()=>resolve();u.onerror=()=>resolve()
    window.speechSynthesis.speak(u)
   })
-  resumeListening()
  }
- function pauseListening(){manualStopRef.current=true;iosLoopPausedRef.current=true;try{recognitionRef.current?.stop()}catch{}}
+ function pauseListening(){mutedRef.current=true;iosLoopPausedRef.current=true}
  function resumeListening(){
   if(!assistantModeRef.current)return
-  manualStopRef.current=false;iosLoopPausedRef.current=false
+  mutedRef.current=false;iosLoopPausedRef.current=false
   const W=window as any,SR=W.SpeechRecognition||W.webkitSpeechRecognition
-  if(SR&&recognitionRef.current){try{recognitionRef.current.start();setListening(true)}catch{}}
-  else if(!SR){iosLoopStep()}
+  if(!SR)iosLoopStep()
  }
  async function runAssistantCommand(commandText:string){
   const q=commandText.trim();if(!q)return
@@ -415,30 +432,48 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
   }
   if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')
  }
+ // Speech recognition often finalizes "Hey" and "Ravi" as two separate
+ // results when there's any pause between them, and phones commonly
+ // mis-hear "Ravi" as "Robbie"/"Ravy"/"Rabi" — so wake detection runs
+ // against a short rolling buffer with a fuzzy name match, not a single
+ // strict phrase on one result.
+ function matchWake(text:string):string|null{
+  const m=text.match(/^\s*(?:hey|hi|hay|okay|ok)?[\s,.]*(?:ravi|robbie|robby|raavi|ravy|rabi|ravvy)\b[,.:]?\s*(.*)$/i)
+  return m?m[1].trim():null
+ }
  async function handleHeardText(transcript:string){
   const t=transcript.trim();if(!t)return
+  if(mutedRef.current)return
   if(busyAssistantRef.current)return
   if(awaitingCommandRef.current){
    awaitingCommandRef.current=false;clearTimeout(awaitingTimeoutRef.current)
    busyAssistantRef.current=true;await runAssistantCommand(t);busyAssistantRef.current=false
    return
   }
-  const m=t.match(/^\s*(?:hey|hi|ok(?:ay)?)?[,]?\s*ravi\b[,.:]?\s*(.*)$/i)
-  if(!m)return
-  const rest=m[1].trim()
+  clearTimeout(wakeBufferTimeoutRef.current)
+  const combined=(wakeBufferRef.current?wakeBufferRef.current+' ':'')+t
+  const rest=matchWake(combined)
+  if(rest===null){
+   // Keep a short recent fragment around briefly in case the wake word
+   // arrives split across it and the next result ("Hey." then "Ravi…").
+   wakeBufferRef.current=combined.length<60?combined:''
+   wakeBufferTimeoutRef.current=setTimeout(()=>{wakeBufferRef.current=''},2500)
+   return
+  }
+  wakeBufferRef.current=''
   if(rest){
    busyAssistantRef.current=true;await runAssistantCommand(rest);busyAssistantRef.current=false
   }else{
    setAssistantStatus('Listening for your command…')
-   if(!greetedRef.current){
-    greetedRef.current=true
-    await speak(`${timeGreeting()}. How may I help you?`)
-   }else{
-    await speak(SHORT_PROMPTS[Math.floor(Math.random()*SHORT_PROMPTS.length)])
-   }
    awaitingCommandRef.current=true
    clearTimeout(awaitingTimeoutRef.current)
-   awaitingTimeoutRef.current=setTimeout(()=>{awaitingCommandRef.current=false;if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')},10000)
+   awaitingTimeoutRef.current=setTimeout(()=>{awaitingCommandRef.current=false;if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')},12000)
+   if(!greetedRef.current){
+    greetedRef.current=true
+    await speakFast(`${timeGreeting()}. How may I help you?`)
+   }else{
+    await speakFast(SHORT_PROMPTS[Math.floor(Math.random()*SHORT_PROMPTS.length)])
+   }
   }
  }
  async function iosLoopStep(){
@@ -472,7 +507,7 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  }
  async function startAssistantMode(){
   if(assistantModeRef.current)return
-  assistantModeRef.current=true;setAssistantMode(true);iosLoopPausedRef.current=false;greetedRef.current=false
+  assistantModeRef.current=true;setAssistantMode(true);iosLoopPausedRef.current=false;greetedRef.current=false;manualStopRef.current=false;mutedRef.current=false;wakeBufferRef.current=''
   setAssistantStatus('Listening for "Hey Ravi"…')
   const W=window as any,SR=W.SpeechRecognition||W.webkitSpeechRecognition
   if(SR){
@@ -497,6 +532,7 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  function stopAssistantMode(){
   assistantModeRef.current=false;setAssistantMode(false);manualStopRef.current=true;iosLoopPausedRef.current=true
   awaitingCommandRef.current=false;clearTimeout(awaitingTimeoutRef.current)
+  mutedRef.current=false;wakeBufferRef.current='';clearTimeout(wakeBufferTimeoutRef.current)
   try{recognitionRef.current?.stop()}catch{}
   recognitionRef.current=null;setListening(false);setAssistantStatus('')
   try{window.speechSynthesis?.cancel()}catch{}

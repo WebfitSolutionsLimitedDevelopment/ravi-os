@@ -5,16 +5,64 @@ import { BrainCircuit,CheckCircle2,Mic,MicOff,Send,ShieldCheck,Sparkles,X } from
 
 type Result={domain:string;intent:string;summary:string;confidence:number;riskLevel:string;requiresApproval:boolean;payload:any;actionId?:string;engine?:string}
 const EXECUTABLE_INTENTS=['add_finance_transaction','create_task','create_reminder','capture_note','create_waiting_for','create_family_commitment','health_log']
+
+// Simple volume-based voice-activity detection: watches the mic stream and
+// resolves once the person has spoken and then paused, instead of cutting
+// them off after a fixed short window.
+function watchForSilence(stream:MediaStream,opts:{maxMs?:number;silenceMs?:number;minSpeechMs?:number;shouldAbort?:()=>boolean}={}):Promise<void>{
+ const maxMs=opts.maxMs??60000,silenceMs=opts.silenceMs??1600,minSpeechMs=opts.minSpeechMs??300,THRESH=0.025
+ return new Promise(resolve=>{
+  const AC=(window as any).AudioContext||(window as any).webkitAudioContext
+  if(!AC){setTimeout(resolve,Math.min(maxMs,6000));return}
+  const ctx=new AC();const src=ctx.createMediaStreamSource(stream);const analyser=ctx.createAnalyser();analyser.fftSize=512;src.connect(analyser)
+  const data=new Uint8Array(analyser.frequencyBinCount)
+  let speechStarted=false,lastLoudAt=Date.now();const startedAt=Date.now()
+  const finish=()=>{try{ctx.close()}catch{};resolve()}
+  const tick=()=>{
+   if(opts.shouldAbort?.()){finish();return}
+   analyser.getByteTimeDomainData(data)
+   let sum=0;for(let i=0;i<data.length;i++){const v=(data[i]-128)/128;sum+=v*v}
+   const rms=Math.sqrt(sum/data.length);const now=Date.now()
+   if(rms>THRESH){lastLoudAt=now;if(!speechStarted&&now-startedAt>minSpeechMs)speechStarted=true}
+   if((speechStarted&&now-lastLoudAt>silenceMs)||now-startedAt>maxMs){finish();return}
+   requestAnimationFrame(tick)
+  }
+  tick()
+ })
+}
+
 export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);const[listening,setListening]=useState(false);const[recording,setRecording]=useState(false);const[text,setText]=useState('');const[result,setResult]=useState<Result|null>(null);const[busy,setBusy]=useState(false);const[message,setMessage]=useState('');const[source,setSource]=useState<'voice'|'text'>('text');const[executed,setExecuted]=useState(false);const[path,setPath]=useState('');const[assistantMode,setAssistantMode]=useState(false);const[assistantStatus,setAssistantStatus]=useState('')
  const mediaRecorderRef=useRef<any>(null);const chunksRef=useRef<Blob[]>([])
+ const oneShotRecognitionRef=useRef<any>(null)
  const assistantModeRef=useRef(false);const recognitionRef=useRef<any>(null);const manualStopRef=useRef(false);const iosLoopPausedRef=useRef(true);const busyAssistantRef=useRef(false);const awaitingCommandRef=useRef(false);const awaitingTimeoutRef=useRef<any>(null)
  useEffect(()=>setPath(window.location.pathname),[])
- useEffect(()=>()=>{assistantModeRef.current=false;try{recognitionRef.current?.stop()}catch{};try{window.speechSynthesis?.cancel()}catch{}},[])
+ useEffect(()=>()=>{assistantModeRef.current=false;try{recognitionRef.current?.stop()}catch{};try{oneShotRecognitionRef.current?.stop()}catch{};try{window.speechSynthesis?.cancel()}catch{}},[])
  if(path.startsWith('/geet'))return null
  async function markExecuted(actionId?:string){if(actionId)await fetch(`/api/intelligence/actions/${actionId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'executed'})})}
  async function autoReminder(d:Result,nextSource:'voice'|'text'){const p=d.payload||{};if(d.intent!=='create_reminder'||d.requiresApproval||!p.title||!p.date||!p.time)return false;setMessage('Setting the reminder…');const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:p.title,notes:p.notes||'',date:p.date,time:p.time,dueAt:new Date(`${p.date}T${p.time}:00`).toISOString(),source:nextSource})});const out=await r.json().catch(()=>({}));if(!r.ok)throw new Error(out.error||'Could not set the reminder');await markExecuted(d.actionId);setExecuted(true);setMessage(`Done. Reminder set for ${p.date} at ${p.time}.`);return true}
  async function interpret(input:string,nextSource:'voice'|'text'){const q=input.trim();if(!q)return;setSource(nextSource);setBusy(true);setExecuted(false);setMessage('Understanding…');setResult(null);try{const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:nextSource})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not understand that');setResult(d);setMessage('');await autoReminder(d,nextSource)}catch(e){setMessage(e instanceof Error?e.message:'Could not understand that')}finally{setBusy(false)}}
- function startSpeechRecognition(SR:any){const r=new SR();r.lang='en-NZ';r.interimResults=false;r.continuous=false;r.onstart=()=>{setOpen(true);setListening(true);setMessage('Listening…')};r.onend=()=>setListening(false);r.onerror=(e:any)=>{setListening(false);const err=e?.error;if(err==='not-allowed'||err==='service-not-allowed')setMessage('Microphone access is blocked for this site. Allow the microphone permission for this site in your browser settings, then try again.');else if(err==='no-speech')setMessage("I didn't hear anything. Tap the mic and try again.");else setMessage('I could not hear that clearly. Try again or type it.')};r.onresult=(e:any)=>{const q=String(e.results?.[0]?.[0]?.transcript||'').trim();setText(q);if(q)interpret(q,'voice')};try{r.start()}catch{setListening(false);setMessage('Could not start listening. Try again or type it.')}}
+
+ // One-shot mic tap (manual "Understand" flow). Listens continuously and
+ // waits for a natural pause instead of cutting off after one short phrase;
+ // tapping the mic again ends it early.
+ function startSpeechRecognition(SR:any){
+  const r=new SR()
+  r.lang='en-NZ';r.interimResults=true;r.continuous=true
+  let finalText='';let silenceTimer:any=null;let hardStop:any=null
+  const finish=()=>{try{r.stop()}catch{}}
+  const scheduleFinish=()=>{clearTimeout(silenceTimer);silenceTimer=setTimeout(finish,2200)}
+  r.onstart=()=>{setOpen(true);setListening(true);setText('');finalText='';setMessage("I'm listening — take your time, I'll wait for you to pause. Tap the mic again to send sooner.");scheduleFinish();hardStop=setTimeout(finish,45000)}
+  r.onresult=(e:any)=>{
+   let interim=''
+   for(let i=e.resultIndex;i<e.results.length;i++){const res=e.results[i];const t=String(res[0]?.transcript||'');if(res.isFinal)finalText=(finalText+' '+t).trim();else interim+=t}
+   setText((finalText+(interim?' '+interim:'')).trim())
+   scheduleFinish()
+  }
+  r.onerror=(e:any)=>{clearTimeout(silenceTimer);clearTimeout(hardStop);setListening(false);const err=e?.error;if(err==='not-allowed'||err==='service-not-allowed')setMessage('Microphone access is blocked for this site. Allow the microphone permission for this site in your browser settings, then try again.');else if(err==='no-speech')setMessage("I didn't catch anything that time. Tap the mic and try again.");else if(err!=='aborted')setMessage('I could not hear that clearly. Try again or type it.')}
+  r.onend=()=>{clearTimeout(silenceTimer);clearTimeout(hardStop);setListening(false);oneShotRecognitionRef.current=null;const q=finalText.trim();if(q)interpret(q,'voice')}
+  oneShotRecognitionRef.current=r
+  try{r.start()}catch{setListening(false);setMessage('Could not start listening. Try again or type it.')}
+ }
  async function startRecording(){
   try{
    const stream=await navigator.mediaDevices.getUserMedia({audio:true})
@@ -40,7 +88,8 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
    }
    mediaRecorderRef.current=mr
    mr.start()
-   setOpen(true);setListening(true);setRecording(true);setMessage('Listening… tap the mic again to stop and send.')
+   setOpen(true);setListening(true);setRecording(true);setMessage("I'm listening — take your time. I'll send it once you pause, or tap the mic again to send sooner.")
+   watchForSilence(stream,{maxMs:60000,silenceMs:1600,minSpeechMs:300,shouldAbort:()=>mediaRecorderRef.current!==mr||mr.state==='inactive'}).then(()=>{if(mediaRecorderRef.current===mr&&mr.state!=='inactive')stopRecording()})
   }catch(e:any){
    setOpen(true)
    if(e?.name==='NotAllowedError'||e?.name==='SecurityError')setMessage('Microphone access was blocked. Allow microphone access for this site in your phone browser settings, then try again — or just type your command below.')
@@ -144,10 +193,10 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
    busyAssistantRef.current=true;await runAssistantCommand(rest);busyAssistantRef.current=false
   }else{
    setAssistantStatus('Yes? Listening for your command…')
-   await speak('Yes?')
+   await speak('Yes, go ahead.')
    awaitingCommandRef.current=true
    clearTimeout(awaitingTimeoutRef.current)
-   awaitingTimeoutRef.current=setTimeout(()=>{awaitingCommandRef.current=false;if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')},8000)
+   awaitingTimeoutRef.current=setTimeout(()=>{awaitingCommandRef.current=false;if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')},10000)
   }
  }
  async function iosLoopStep(){
@@ -161,7 +210,7 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
    mr.ondataavailable=(e:any)=>{if(e.data&&e.data.size>0)chunks.push(e.data)}
    const stopped=new Promise<void>(res=>{mr.onstop=()=>res()})
    mr.start()
-   await new Promise(res=>setTimeout(res,4000))
+   await watchForSilence(stream,{maxMs:20000,silenceMs:1200,minSpeechMs:250,shouldAbort:()=>!assistantModeRef.current||iosLoopPausedRef.current})
    if(mr.state!=='inactive')mr.stop()
    await stopped
    stream.getTracks().forEach((t:any)=>t.stop())
@@ -213,9 +262,9 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  }
 
  return <>
-  <button type="button" className={`raviVoiceFab${recording?' raviVoiceFabRecording':''}`} aria-label="Ravi voice assistant" onClick={()=>{if(recording){stopRecording();return}if(assistantMode){setOpen(o=>!o);return}if(open){setOpen(false);return}startVoice()}}>{listening?<MicOff/>:<Mic/>}</button>
+  <button type="button" className={`raviVoiceFab${recording?' raviVoiceFabRecording':''}`} aria-label="Ravi voice assistant" onClick={()=>{if(recording){stopRecording();return}if(listening&&oneShotRecognitionRef.current){try{oneShotRecognitionRef.current.stop()}catch{};return}if(assistantMode){setOpen(o=>!o);return}if(open){setOpen(false);return}startVoice()}}>{listening?<MicOff/>:<Mic/>}</button>
   <button type="button" className={`raviAssistantToggle${assistantMode?' raviAssistantToggleOn':''}`} aria-label="Toggle Hey Ravi assistant mode" onClick={()=>assistantMode?stopAssistantMode():startAssistantMode()}><Sparkles/></button>
   {assistantMode&&assistantStatus&&<div className="raviAssistantStatus">{assistantStatus}</div>}
-  {open&&<div className="raviVoiceBackdrop" onClick={()=>{if(!recording)setOpen(false)}}><section className="raviVoicePanel" onClick={e=>e.stopPropagation()}><header><span><BrainCircuit/><div><small>RAVI INTELLIGENCE</small><b>What should I manage?</b></div></span><button type="button" onClick={()=>{if(recording)stopRecording();setOpen(false)}}><X/></button></header><form onSubmit={submit}><textarea autoFocus value={text} onChange={e=>setText(e.target.value)} placeholder="Try: ‘Remind me Monday morning to call the cricket association’, ‘Spent $45 on groceries’, ‘I am waiting for John’. On a phone, your keyboard's own mic/dictation key works here too."/><button disabled={busy||!text.trim()}><Send/>{busy?'Working…':'Understand'}</button></form>{message&&<p className="raviVoiceMessage">{message}</p>}{result&&<div className="raviVoiceResult"><div className="raviVoiceMeta"><span>{result.domain}</span><span>{Math.round((result.confidence||0)*100)}% confidence</span><span>{result.riskLevel} risk</span></div><h3>{result.summary}</h3>{executed?<p><CheckCircle2/> Completed and recorded.</p>:<p><ShieldCheck/> {result.requiresApproval?'Approval required before action.':'Safe action can be completed automatically.'}</p>}{!executed&&executable&&result.requiresApproval&&<button onClick={()=>execute()}><CheckCircle2/>Approve & execute</button>}{executed&&<button onClick={route}><CheckCircle2/>Open {result.domain==='tasks'?'Reminders / Tasks':result.domain}</button>}{!executable&&<button onClick={route}>Review in {result.domain==='email'?'Personal Secretary':result.domain.charAt(0).toUpperCase()+result.domain.slice(1)}</button>}</div>}<footer>Say "Hey Ravi" (tap the sparkle button once to turn on) for hands-free capture — it now executes finance, tasks, reminders, family, health and notes automatically and replies out loud. Email sends, money movement and other consequential actions remain explicitly gated.</footer></section></div>}
+  {open&&<div className="raviVoiceBackdrop" onClick={()=>{if(!recording&&!listening)setOpen(false)}}><section className="raviVoicePanel" onClick={e=>e.stopPropagation()}><header><span><BrainCircuit/><div><small>RAVI INTELLIGENCE</small><b>What should I manage?</b></div></span><button type="button" onClick={()=>{if(recording)stopRecording();if(listening&&oneShotRecognitionRef.current){try{oneShotRecognitionRef.current.stop()}catch{}}setOpen(false)}}><X/></button></header><form onSubmit={submit}><textarea autoFocus value={text} onChange={e=>setText(e.target.value)} placeholder="Try: ‘Remind me Monday morning to call the cricket association’, ‘Spent $45 on groceries’, ‘I am waiting for John’. On a phone, your keyboard's own mic/dictation key works here too."/><button disabled={busy||!text.trim()}><Send/>{busy?'Working…':'Understand'}</button></form>{message&&<p className="raviVoiceMessage">{message}</p>}{result&&<div className="raviVoiceResult"><div className="raviVoiceMeta"><span>{result.domain}</span><span>{Math.round((result.confidence||0)*100)}% confidence</span><span>{result.riskLevel} risk</span></div><h3>{result.summary}</h3>{executed?<p><CheckCircle2/> Completed and recorded.</p>:<p><ShieldCheck/> {result.requiresApproval?'Approval required before action.':'Safe action can be completed automatically.'}</p>}{!executed&&executable&&result.requiresApproval&&<button onClick={()=>execute()}><CheckCircle2/>Approve & execute</button>}{executed&&<button onClick={route}><CheckCircle2/>Open {result.domain==='tasks'?'Reminders / Tasks':result.domain}</button>}{!executable&&<button onClick={route}>Review in {result.domain==='email'?'Personal Secretary':result.domain.charAt(0).toUpperCase()+result.domain.slice(1)}</button>}</div>}<footer>Say "Hey Ravi" (tap the sparkle button once to turn on) for hands-free capture — it waits for a natural pause instead of cutting you off, executes finance, tasks, reminders, family, health and notes automatically, and replies out loud. Email sends, money movement and other consequential actions remain explicitly gated.</footer></section></div>}
  </>
 }

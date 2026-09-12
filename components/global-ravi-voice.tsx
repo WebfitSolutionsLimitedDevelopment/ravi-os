@@ -31,6 +31,63 @@ function watchForSilence(stream:MediaStream,opts:{maxMs?:number;silenceMs?:numbe
  })
 }
 
+function todayNZClient(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
+function fmtTime12(t:string){if(!t)return'';const[h,m]=t.split(':').map(Number);if(Number.isNaN(h))return t;const hh=((h+11)%12)+1;const ap=h<12?'AM':'PM';return `${hh}:${String(m||0).padStart(2,'0')} ${ap}`}
+
+// Answers a read-only "what's on / how much / any tasks" style question by
+// fetching the real data from the relevant module — never invented.
+async function answerQuery(topic:string,scope:string):Promise<string>{
+ const today=todayNZClient()
+ try{
+  if(topic==='reminders'){
+   const r=await fetch('/api/reminders');const d=await r.json().catch(()=>({}));const list=Array.isArray(d.reminders)?d.reminders:[]
+   const filtered=scope==='today'?list.filter((x:any)=>x.date===today):list.filter((x:any)=>x.date>=today)
+   const sorted=[...filtered].sort((a:any,b:any)=>`${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`))
+   if(!sorted.length)return scope==='today'?"You don't have any reminders today.":"You don't have any upcoming reminders."
+   const items=sorted.slice(0,5).map((x:any)=>`${x.title}${x.time?` at ${fmtTime12(x.time)}`:''}${scope!=='today'&&x.date!==today?` on ${x.date}`:''}`)
+   return `You have ${sorted.length} reminder${sorted.length===1?'':'s'}${scope==='today'?' today':''}: ${items.join('; ')}.`
+  }
+  if(topic==='tasks'){
+   const r=await fetch('/api/tasks');const d=await r.json().catch(()=>({}));const list=Array.isArray(d.tasks)?d.tasks:[]
+   const open=list.filter((x:any)=>x.status==='open')
+   const filtered=scope==='today'?open.filter((x:any)=>x.dueDate===today):open
+   if(!filtered.length)return scope==='today'?"You have no tasks due today.":"You have no open tasks."
+   const items=filtered.slice(0,6).map((x:any)=>`${x.title}${x.priority==='high'?' — high priority':''}`)
+   return `You have ${filtered.length} open task${filtered.length===1?'':'s'}${scope==='today'?' due today':''}: ${items.join('; ')}.`
+  }
+  if(topic==='waiting_for'){
+   const r=await fetch('/api/waiting-for');const d=await r.json().catch(()=>({}));const list=Array.isArray(d.items)?d.items:[]
+   const waiting=list.filter((x:any)=>x.status==='waiting')
+   if(!waiting.length)return "You're not waiting on anything right now."
+   const items=waiting.slice(0,6).map((x:any)=>`${x.person?`${x.person} about `:''}${x.title}`)
+   return `You're waiting on ${waiting.length} thing${waiting.length===1?'':'s'}: ${items.join('; ')}.`
+  }
+  if(topic==='health'){
+   const r=await fetch('/api/health');const d=await r.json().catch(()=>({}));const list=Array.isArray(d.metrics)?d.metrics:[]
+   const latest=list[0]
+   if(!latest)return "You haven't logged any health data yet."
+   const bits:string[]=[]
+   if(latest.sleep_hours)bits.push(`${latest.sleep_hours} hours of sleep`)
+   if(latest.steps)bits.push(`${Number(latest.steps).toLocaleString()} steps`)
+   if(latest.protein_g)bits.push(`${latest.protein_g} grams of protein`)
+   if(latest.water_ml)bits.push(`${latest.water_ml} milliliters of water`)
+   if(latest.exercise_minutes)bits.push(`${latest.exercise_minutes} minutes of exercise`)
+   return bits.length?`Your last check-in was on ${latest.metric_date}: ${bits.join(', ')}.`:`Your last check-in was on ${latest.metric_date}, but no details were logged.`
+  }
+  if(topic==='finance'){
+   const r=await fetch('/api/finance');const d=await r.json().catch(()=>({}));const list=Array.isArray(d.transactions)?d.transactions:[]
+   const todays=list.filter((x:any)=>x.date===today)
+   const relevant=scope==='today'?todays:list.slice(0,5)
+   if(!relevant.length)return scope==='today'?"You have no transactions recorded today.":"I couldn't find any recent transactions."
+   const spend=relevant.filter((x:any)=>x.type==='expense').reduce((s:number,x:any)=>s+Number(x.amount||0),0)
+   const items=relevant.slice(0,5).map((x:any)=>`${x.type} of ${x.currency||'NZD'} ${Number(x.amount||0).toFixed(2)}${x.merchant?` at ${x.merchant}`:''}`)
+   const totalLine=scope==='today'&&spend>0?` Total spent today: ${relevant[0]?.currency||'NZD'} ${spend.toFixed(2)}.`:''
+   return `${items.join('; ')}.${totalLine}`
+  }
+ }catch{}
+ return "I couldn't fetch that information right now."
+}
+
 export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);const[listening,setListening]=useState(false);const[recording,setRecording]=useState(false);const[text,setText]=useState('');const[result,setResult]=useState<Result|null>(null);const[busy,setBusy]=useState(false);const[message,setMessage]=useState('');const[source,setSource]=useState<'voice'|'text'>('text');const[executed,setExecuted]=useState(false);const[path,setPath]=useState('');const[assistantMode,setAssistantMode]=useState(false);const[assistantStatus,setAssistantStatus]=useState('')
  const mediaRecorderRef=useRef<any>(null);const chunksRef=useRef<Blob[]>([])
  const oneShotRecognitionRef=useRef<any>(null)
@@ -40,7 +97,25 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  if(path.startsWith('/geet'))return null
  async function markExecuted(actionId?:string){if(actionId)await fetch(`/api/intelligence/actions/${actionId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'executed'})})}
  async function autoReminder(d:Result,nextSource:'voice'|'text'){const p=d.payload||{};if(d.intent!=='create_reminder'||d.requiresApproval||!p.title||!p.date||!p.time)return false;setMessage('Setting the reminder…');const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:p.title,notes:p.notes||'',date:p.date,time:p.time,dueAt:new Date(`${p.date}T${p.time}:00`).toISOString(),source:nextSource})});const out=await r.json().catch(()=>({}));if(!r.ok)throw new Error(out.error||'Could not set the reminder');await markExecuted(d.actionId);setExecuted(true);setMessage(`Done. Reminder set for ${p.date} at ${p.time}.`);return true}
- async function interpret(input:string,nextSource:'voice'|'text'){const q=input.trim();if(!q)return;setSource(nextSource);setBusy(true);setExecuted(false);setMessage('Understanding…');setResult(null);try{const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:nextSource})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not understand that');setResult(d);setMessage('');await autoReminder(d,nextSource)}catch(e){setMessage(e instanceof Error?e.message:'Could not understand that')}finally{setBusy(false)}}
+ async function interpret(input:string,nextSource:'voice'|'text'){
+  const q=input.trim();if(!q)return
+  setSource(nextSource);setBusy(true);setExecuted(false);setMessage('Understanding…');setResult(null)
+  try{
+   const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:nextSource})})
+   const d=await r.json()
+   if(!r.ok)throw new Error(d.error||'Could not understand that')
+   setResult(d)
+   if(d.intent==='query_info'){
+    setMessage('Checking…')
+    const answer=await answerQuery(String(d.payload?.topic||''),String(d.payload?.scope||'today'))
+    setMessage(answer)
+    if(nextSource==='voice')await speak(answer)
+    return
+   }
+   setMessage('')
+   await autoReminder(d,nextSource)
+  }catch(e){setMessage(e instanceof Error?e.message:'Could not understand that')}finally{setBusy(false)}
+ }
 
  // One-shot mic tap (manual "Understand" flow). Listens continuously and
  // waits for a natural pause instead of cutting off after one short phrase;
@@ -134,17 +209,34 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  const executable=result&&EXECUTABLE_INTENTS.includes(result.intent)
 
  // ---- "Hey Ravi" always-on assistant mode ----
- function speak(text:string):Promise<void>{
-  return new Promise(resolve=>{
-   pauseListening()
-   if(!('speechSynthesis' in window)){resumeListening();resolve();return}
+ // Speaks a reply using a realistic server-side voice (OpenAI TTS) when
+ // available, falling back to the browser's built-in voice otherwise.
+ async function speak(text:string):Promise<void>{
+  pauseListening()
+  try{
+   const r=await fetch('/api/intelligence/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})})
+   if(r.ok){
+    const blob=await r.blob()
+    const url=URL.createObjectURL(blob)
+    await new Promise<void>(resolve=>{
+     const audio=new Audio(url)
+     audio.onended=()=>resolve();audio.onerror=()=>resolve()
+     audio.play().catch(()=>resolve())
+    })
+    URL.revokeObjectURL(url)
+    resumeListening()
+    return
+   }
+  }catch{}
+  await new Promise<void>(resolve=>{
+   if(!('speechSynthesis' in window)){resolve();return}
    try{window.speechSynthesis.cancel()}catch{}
    const u=new SpeechSynthesisUtterance(text)
    u.lang='en-NZ'
-   u.onend=()=>{resumeListening();resolve()}
-   u.onerror=()=>{resumeListening();resolve()}
+   u.onend=()=>resolve();u.onerror=()=>resolve()
    window.speechSynthesis.speak(u)
   })
+  resumeListening()
  }
  function pauseListening(){manualStopRef.current=true;iosLoopPausedRef.current=true;try{recognitionRef.current?.stop()}catch{}}
  function resumeListening(){
@@ -162,7 +254,11 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
    const d=await r.json()
    if(!r.ok)throw new Error(d.error||'Could not understand that')
    setResult(d);setSource('voice');setExecuted(false)
-   if(EXECUTABLE_INTENTS.includes(d.intent)){
+   if(d.intent==='query_info'){
+    const answer=await answerQuery(String(d.payload?.topic||''),String(d.payload?.scope||'today'))
+    setAssistantStatus(answer)
+    await speak(answer)
+   }else if(EXECUTABLE_INTENTS.includes(d.intent)){
     const outcome=await execute(d)
     setAssistantStatus(outcome.spoken)
     await speak(outcome.spoken)
@@ -265,6 +361,6 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
   <button type="button" className={`raviVoiceFab${recording?' raviVoiceFabRecording':''}`} aria-label="Ravi voice assistant" onClick={()=>{if(recording){stopRecording();return}if(listening&&oneShotRecognitionRef.current){try{oneShotRecognitionRef.current.stop()}catch{};return}if(assistantMode){setOpen(o=>!o);return}if(open){setOpen(false);return}startVoice()}}>{listening?<MicOff/>:<Mic/>}</button>
   <button type="button" className={`raviAssistantToggle${assistantMode?' raviAssistantToggleOn':''}`} aria-label="Toggle Hey Ravi assistant mode" onClick={()=>assistantMode?stopAssistantMode():startAssistantMode()}><Sparkles/></button>
   {assistantMode&&assistantStatus&&<div className="raviAssistantStatus">{assistantStatus}</div>}
-  {open&&<div className="raviVoiceBackdrop" onClick={()=>{if(!recording&&!listening)setOpen(false)}}><section className="raviVoicePanel" onClick={e=>e.stopPropagation()}><header><span><BrainCircuit/><div><small>RAVI INTELLIGENCE</small><b>What should I manage?</b></div></span><button type="button" onClick={()=>{if(recording)stopRecording();if(listening&&oneShotRecognitionRef.current){try{oneShotRecognitionRef.current.stop()}catch{}}setOpen(false)}}><X/></button></header><form onSubmit={submit}><textarea autoFocus value={text} onChange={e=>setText(e.target.value)} placeholder="Try: ‘Remind me Monday morning to call the cricket association’, ‘Spent $45 on groceries’, ‘I am waiting for John’. On a phone, your keyboard's own mic/dictation key works here too."/><button disabled={busy||!text.trim()}><Send/>{busy?'Working…':'Understand'}</button></form>{message&&<p className="raviVoiceMessage">{message}</p>}{result&&<div className="raviVoiceResult"><div className="raviVoiceMeta"><span>{result.domain}</span><span>{Math.round((result.confidence||0)*100)}% confidence</span><span>{result.riskLevel} risk</span></div><h3>{result.summary}</h3>{executed?<p><CheckCircle2/> Completed and recorded.</p>:<p><ShieldCheck/> {result.requiresApproval?'Approval required before action.':'Safe action can be completed automatically.'}</p>}{!executed&&executable&&result.requiresApproval&&<button onClick={()=>execute()}><CheckCircle2/>Approve & execute</button>}{executed&&<button onClick={route}><CheckCircle2/>Open {result.domain==='tasks'?'Reminders / Tasks':result.domain}</button>}{!executable&&<button onClick={route}>Review in {result.domain==='email'?'Personal Secretary':result.domain.charAt(0).toUpperCase()+result.domain.slice(1)}</button>}</div>}<footer>Say "Hey Ravi" (tap the sparkle button once to turn on) for hands-free capture — it waits for a natural pause instead of cutting you off, executes finance, tasks, reminders, family, health and notes automatically, and replies out loud. Email sends, money movement and other consequential actions remain explicitly gated.</footer></section></div>}
+  {open&&<div className="raviVoiceBackdrop" onClick={()=>{if(!recording&&!listening)setOpen(false)}}><section className="raviVoicePanel" onClick={e=>e.stopPropagation()}><header><span><BrainCircuit/><div><small>RAVI INTELLIGENCE</small><b>What should I manage?</b></div></span><button type="button" onClick={()=>{if(recording)stopRecording();if(listening&&oneShotRecognitionRef.current){try{oneShotRecognitionRef.current.stop()}catch{}}setOpen(false)}}><X/></button></header><form onSubmit={submit}><textarea autoFocus value={text} onChange={e=>setText(e.target.value)} placeholder="Try: ‘Remind me Monday morning to call the cricket association’, ‘Spent $45 on groceries’, ‘I am waiting for John’. On a phone, your keyboard's own mic/dictation key works here too."/><button disabled={busy||!text.trim()}><Send/>{busy?'Working…':'Understand'}</button></form>{message&&<p className="raviVoiceMessage">{message}</p>}{result&&result.intent==='query_info'&&!busy&&message&&<button type="button" className="raviVoiceReadAloud" onClick={()=>speak(message)}><Sparkles/>Read aloud</button>}{result&&result.intent!=='query_info'&&<div className="raviVoiceResult"><div className="raviVoiceMeta"><span>{result.domain}</span><span>{Math.round((result.confidence||0)*100)}% confidence</span><span>{result.riskLevel} risk</span></div><h3>{result.summary}</h3>{executed?<p><CheckCircle2/> Completed and recorded.</p>:<p><ShieldCheck/> {result.requiresApproval?'Approval required before action.':'Safe action can be completed automatically.'}</p>}{!executed&&executable&&result.requiresApproval&&<button onClick={()=>execute()}><CheckCircle2/>Approve & execute</button>}{executed&&<button onClick={route}><CheckCircle2/>Open {result.domain==='tasks'?'Reminders / Tasks':result.domain}</button>}{!executable&&<button onClick={route}>Review in {result.domain==='email'?'Personal Secretary':result.domain.charAt(0).toUpperCase()+result.domain.slice(1)}</button>}</div>}<footer>Say "Hey Ravi" (tap the sparkle button once to turn on) for hands-free capture — it waits for a natural pause instead of cutting you off, executes finance, tasks, reminders, family, health and notes automatically, and replies out loud. Email sends, money movement and other consequential actions remain explicitly gated.</footer></section></div>}
  </>
 }

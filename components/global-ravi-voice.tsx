@@ -124,6 +124,21 @@ async function answerQuery(topic:string,scope:string):Promise<string>{
  return "I couldn't fetch that information right now."
 }
 
+// A single question classifies to payload.queries: [{topic,scope}]. This
+// reads that (or the older single topic/scope shape, for resilience) and
+// answers every part of a compound question ("what's on today and how
+// much did I spend") in one combined reply.
+function normalizeQueries(payload:any):{topic:string;scope:string}[]{
+ if(Array.isArray(payload?.queries)&&payload.queries.length)return payload.queries.map((x:any)=>({topic:String(x?.topic||''),scope:String(x?.scope||'today')})).filter((x:any)=>x.topic)
+ if(payload?.topic)return[{topic:String(payload.topic),scope:String(payload.scope||'today')}]
+ return[]
+}
+async function answerQueries(queries:{topic:string;scope:string}[]):Promise<string>{
+ if(!queries.length)return "I'm not sure what you're asking about — try naming it, like reminders, tasks, family or spending."
+ const parts=await Promise.all(queries.map(x=>answerQuery(x.topic,x.scope)))
+ return parts.join(' ')
+}
+
 // career_advice is also a read-only ask — run the real career strategist
 // call and speak back a short version of its answer.
 async function answerCareerAdvice(question:string):Promise<string>{
@@ -141,19 +156,27 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  const mediaRecorderRef=useRef<any>(null);const chunksRef=useRef<Blob[]>([])
  const oneShotRecognitionRef=useRef<any>(null)
  const assistantModeRef=useRef(false);const recognitionRef=useRef<any>(null);const manualStopRef=useRef(false);const iosLoopPausedRef=useRef(true);const busyAssistantRef=useRef(false);const awaitingCommandRef=useRef(false);const awaitingTimeoutRef=useRef<any>(null)
- const lastQueryRef=useRef<{topic:string;scope:string}|null>(null)
+ const lastQueryRef=useRef<{topics:string[];scope:string}|null>(null)
+ const historyRef=useRef<{role:'user'|'assistant';content:string}[]>([])
  useEffect(()=>setPath(window.location.pathname),[])
  useEffect(()=>()=>{assistantModeRef.current=false;try{recognitionRef.current?.stop()}catch{};try{oneShotRecognitionRef.current?.stop()}catch{};try{window.speechSynthesis?.cancel()}catch{}},[])
  if(path.startsWith('/geet'))return null
- // Resolves a short conversational follow-up ("and tomorrow?") against the
- // last thing that was asked, without needing a full re-classification.
+ // Keeps a short rolling window of the conversation so the classifier can
+ // resolve references in the next message ("and tomorrow?", "what about
+ // that one") without the person repeating themselves.
+ function pushHistory(userText:string,assistantText:string){
+  historyRef.current=[...historyRef.current,{role:'user' as const,content:userText},{role:'assistant' as const,content:assistantText}].slice(-8)
+ }
+ // Fast, free, zero-latency path for the most common follow-up shape
+ // ("and tomorrow?"/"what about this week") against the last question(s)
+ // asked — anything less literal still goes to the AI with full history.
  async function tryFollowUp(q:string):Promise<string|null>{
   if(!lastQueryRef.current)return null
   if(!FOLLOW_UP_RE.test(q.trim()))return null
   const scope=mapFollowUpScope(q)
   if(!scope)return null
-  lastQueryRef.current={topic:lastQueryRef.current.topic,scope}
-  return answerQuery(lastQueryRef.current.topic,scope)
+  lastQueryRef.current={topics:lastQueryRef.current.topics,scope}
+  return answerQueries(lastQueryRef.current.topics.map(topic=>({topic,scope})))
  }
  async function markExecuted(actionId?:string){if(actionId)await fetch(`/api/intelligence/actions/${actionId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'executed'})})}
  async function autoReminder(d:Result,nextSource:'voice'|'text'){const p=d.payload||{};if(d.intent!=='create_reminder'||d.requiresApproval||!p.title||!p.date||!p.time)return false;setMessage('Setting the reminder…');const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:p.title,notes:p.notes||'',date:p.date,time:p.time,dueAt:new Date(`${p.date}T${p.time}:00`).toISOString(),source:nextSource})});const out=await r.json().catch(()=>({}));if(!r.ok)throw new Error(out.error||'Could not set the reminder');await markExecuted(d.actionId);setExecuted(true);setMessage(`Done. Reminder set for ${p.date} at ${p.time}.`);return true}
@@ -165,19 +188,21 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
    if(followUp!==null){
     setResult({domain:'general',intent:'query_info',summary:'Follow-up question',confidence:0.9,riskLevel:'low',requiresApproval:false,payload:{}})
     setMessage(followUp)
+    pushHistory(q,followUp)
     if(nextSource==='voice')await speak(followUp)
     return
    }
-   const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:nextSource})})
+   const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:nextSource,history:historyRef.current})})
    const d=await r.json()
    if(!r.ok)throw new Error(d.error||'Could not understand that')
    setResult(d)
    if(d.intent==='query_info'){
-    const topic=String(d.payload?.topic||'');const scope=String(d.payload?.scope||'today')
-    lastQueryRef.current={topic,scope}
+    const queries=normalizeQueries(d.payload)
+    if(queries.length)lastQueryRef.current={topics:queries.map(x=>x.topic),scope:queries[0].scope}
     setMessage('Checking…')
-    const answer=await answerQuery(topic,scope)
+    const answer=await answerQueries(queries)
     setMessage(answer)
+    pushHistory(q,answer)
     if(nextSource==='voice')await speak(answer)
     return
    }
@@ -185,10 +210,12 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
     setMessage('Thinking it through…')
     const answer=await answerCareerAdvice(String(d.payload?.question||d.payload?.focus||q))
     setMessage(answer)
+    pushHistory(q,answer)
     if(nextSource==='voice')await speak(answer)
     return
    }
    setMessage('')
+   pushHistory(q,String(d.summary||d.intent||''))
    await autoReminder(d,nextSource)
   }catch(e){setMessage(e instanceof Error?e.message:'Could not understand that')}finally{setBusy(false)}
  }
@@ -329,32 +356,37 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
   const followUp=await tryFollowUp(q)
   if(followUp!==null){
    setAssistantStatus(followUp)
+   pushHistory(q,followUp)
    await speak(followUp)
    if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')
    return
   }
   try{
-   const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:'voice'})})
+   const r=await fetch('/api/intelligence/interpret',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:q,source:'voice',history:historyRef.current})})
    const d=await r.json()
    if(!r.ok)throw new Error(d.error||'Could not understand that')
    setResult(d);setSource('voice');setExecuted(false)
    if(d.intent==='query_info'){
-    const topic=String(d.payload?.topic||'');const scope=String(d.payload?.scope||'today')
-    lastQueryRef.current={topic,scope}
-    const answer=await answerQuery(topic,scope)
+    const queries=normalizeQueries(d.payload)
+    if(queries.length)lastQueryRef.current={topics:queries.map(x=>x.topic),scope:queries[0].scope}
+    const answer=await answerQueries(queries)
     setAssistantStatus(answer)
+    pushHistory(q,answer)
     await speak(answer)
    }else if(d.intent==='career_advice'){
     const answer=await answerCareerAdvice(String(d.payload?.question||d.payload?.focus||q))
     setAssistantStatus(answer)
+    pushHistory(q,answer)
     await speak(answer)
    }else if(EXECUTABLE_INTENTS.includes(d.intent)){
     const outcome=await execute(d)
     setAssistantStatus(outcome.spoken)
+    pushHistory(q,outcome.spoken)
     await speak(outcome.spoken)
    }else{
     const spoken=`${d.summary} You'll need to review this one in the app.`
     setAssistantStatus(spoken)
+    pushHistory(q,spoken)
     await speak(spoken)
    }
   }catch(e){

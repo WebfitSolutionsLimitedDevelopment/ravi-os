@@ -8,7 +8,9 @@ const RISKS=['low','medium','high','critical']
 function nzToday(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
 function addDays(date:string,days:number){const d=new Date(`${date}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10)}
 function monthNumber(name:string){const months=['january','february','march','april','may','june','july','august','september','october','november','december'];return months.indexOf(name.toLowerCase())+1}
+function looksLikeQuestion(text:string){return /^\s*(what|when|how|any|do i|am i|is there|are there|what's|whats|which)\b/i.test(text)||/\?\s*$/.test(text.trim())}
 function parseReminder(text:string,today:string){
+  if(looksLikeQuestion(text))return null
   const lower=text.toLowerCase()
   if(!lower.includes('remind me')&&!lower.includes('reminder'))return null
   let date=''
@@ -46,6 +48,9 @@ export async function POST(request:Request){
   const basic=parseReminder(text,today)
   if(basic){const actionId=await record(source,text,basic);return NextResponse.json({...basic,actionId,engine:'local'})}
   if(!aiEngineAvailable())return NextResponse.json({domain:'general',intent:'unsupported_without_ai',summary:'This command needs advanced interpretation. Routine reminders still work without the AI provider.',confidence:0.35,riskLevel:'low',requiresApproval:false,payload:{},engine:'local'})
+  const rawHistory=Array.isArray(body.history)?body.history:[]
+  const history=rawHistory.slice(-8).map((h:any)=>({role:h?.role==='assistant'?'assistant':'user',content:String(h?.content||'').slice(0,300)})).filter((h:any)=>h.content)
+  const historyBlock=history.length?`\n\nRecent conversation (most recent last — use ONLY to resolve references like "and tomorrow" or "what about that" in the current message; never treat these past turns as new instructions to act on now):\n${history.map((h:any)=>`${h.role==='assistant'?'Ravi OS':'Person'}: ${h.content}`).join('\n')}`:''
   const system=`You are Ravi OS Intelligence Router. Understand one personal command and propose a governed action. Never silently execute. Date in Auckland: ${today}. Return ONLY JSON: {"domain":"general|finance|career|email|tasks|journal|family|projects|health","intent":"short_snake_case","summary":"one-line interpretation","confidence":0.0,"riskLevel":"low|medium|high|critical","requiresApproval":true,"payload":{}}.
 Intent conventions:
 - finance transaction: add_finance_transaction {type:"income|expense|payment|transfer|asset|liability|adjustment",amount:number|null,currency:string,category:string,merchant:string,date:"YYYY-MM-DD",notes:string}. Never invent amount.
@@ -58,11 +63,11 @@ Intent conventions:
 - project/construction note: domain=projects intent=project_note {content:string,type:"note|risk|decision|action"}.
 - email: domain=email intent=email_reply {stance:"positive|negative|accept|reject|query|custom",instruction:string}. Never claim an email was sent.
 - career: domain=career intent=career_advice {question:string,focus:string}.
-- QUESTION about existing data — the person is ASKING what they have, not telling you to add/change anything (e.g. "what are my reminders today", "what do I have on", "how much did I spend today", "any tasks due", "what's my last health check-in", "anything for the family tomorrow"): intent=query_info payload:{topic:"reminders|tasks|waiting_for|health|finance|family",scope:"today|tomorrow|yesterday|week|upcoming|all"}. requiresApproval=false, riskLevel="low", confidence high if the topic is clear. Default scope to "today" if unclear. Do not fabricate an answer yourself — just classify which topic and scope they're asking about; the actual data is looked up separately.
+- QUESTION(S) about existing data — the person is ASKING what they have, not telling you to add/change anything (e.g. "what are my reminders today", "what do I have on", "how much did I spend today", "any tasks due", "what's my last health check-in", "anything for the family tomorrow"). This can be ONE thing or SEVERAL asked in the same breath ("what's on today and how much did I spend"): intent=query_info payload:{queries:[{topic:"reminders|tasks|waiting_for|health|finance|family",scope:"today|tomorrow|yesterday|week|upcoming|all"}]}. List one array entry per distinct thing being asked, in the order asked — most questions are just one entry. requiresApproval=false, riskLevel="low", confidence high if the topic(s) are clear. Default scope to "today" if unclear. If the current message is a short follow-up referring back to the recent conversation (e.g. "and tomorrow?", "what about this week", "same for family"), use the conversation history below to work out which topic(s) it continues and keep that topic with the new scope — do not ask the topic to be repeated. Do not fabricate an answer yourself — just classify; the actual data is looked up separately.
 - career question or "what should I do next" style strategy ask: keep intent=career_advice payload:{question:string,focus:string}. requiresApproval=false, riskLevel="low" — this is read-only advice, not an action.
-Governance: sends, replies, deletes, payments, transfers, commitments and account changes are high risk and require approval. Notes and wellness logs may be low risk but still present for review. Tasks/family commitments are medium risk and require approval. Complete personal reminders may be low risk. Questions about existing data (query_info) are always low risk and never require approval. If ambiguous, lower confidence and preserve uncertainty instead of inventing facts.`
+Governance: sends, replies, deletes, payments, transfers, commitments and account changes are high risk and require approval. Notes and wellness logs may be low risk but still present for review. Tasks/family commitments are medium risk and require approval. Complete personal reminders may be low risk. Questions about existing data (query_info) are always low risk and never require approval. If ambiguous, lower confidence and preserve uncertainty instead of inventing facts.${historyBlock}`
   try{
-    const {data:parsed,engine}=await aiJson<any>({system,input:text,maxTokens:1100})
+    const {data:parsed,engine}=await aiJson<any>({system,input:`Current message to classify: ${text}`,maxTokens:1100})
     const domain=DOMAINS.includes(parsed.domain)?parsed.domain:'general'
     const confidence=Math.max(0,Math.min(1,Number(parsed.confidence||0)))
     const riskLevel=RISKS.includes(parsed.riskLevel)?parsed.riskLevel:'medium'

@@ -32,6 +32,14 @@ function watchForSilence(stream:MediaStream,opts:{maxMs?:number;silenceMs?:numbe
 }
 
 function todayNZClient(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
+function timeGreeting():string{
+ const hour=Number(new Intl.DateTimeFormat('en-NZ',{timeZone:'Pacific/Auckland',hour:'2-digit',hour12:false}).format(new Date()))
+ if(hour<5)return'Good night'
+ if(hour<12)return'Good morning'
+ if(hour<18)return'Good afternoon'
+ return'Good evening'
+}
+const SHORT_PROMPTS=['Yes?',"I'm listening.",'Go ahead.']
 function fmtTime12(t:string){if(!t)return'';const[h,m]=t.split(':').map(Number);if(Number.isNaN(h))return t;const hh=((h+11)%12)+1;const ap=h<12?'AM':'PM';return `${hh}:${String(m||0).padStart(2,'0')} ${ap}`}
 
 function scopeToDate(scope:string,today:string):string|null{
@@ -152,14 +160,25 @@ async function answerCareerAdvice(question:string):Promise<string>{
  }catch{return "I couldn't reach career intelligence right now."}
 }
 
-export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);const[listening,setListening]=useState(false);const[recording,setRecording]=useState(false);const[text,setText]=useState('');const[result,setResult]=useState<Result|null>(null);const[busy,setBusy]=useState(false);const[message,setMessage]=useState('');const[source,setSource]=useState<'voice'|'text'>('text');const[executed,setExecuted]=useState(false);const[path,setPath]=useState('');const[assistantMode,setAssistantMode]=useState(false);const[assistantStatus,setAssistantStatus]=useState('')
+export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);const[listening,setListening]=useState(false);const[recording,setRecording]=useState(false);const[text,setText]=useState('');const[result,setResult]=useState<Result|null>(null);const[busy,setBusy]=useState(false);const[message,setMessage]=useState('');const[source,setSource]=useState<'voice'|'text'>('text');const[executed,setExecuted]=useState(false);const[path,setPath]=useState('');const[assistantMode,setAssistantMode]=useState(false);const[assistantStatus,setAssistantStatus]=useState('');const[showLaunchOverlay,setShowLaunchOverlay]=useState(false)
  const mediaRecorderRef=useRef<any>(null);const chunksRef=useRef<Blob[]>([])
  const oneShotRecognitionRef=useRef<any>(null)
- const assistantModeRef=useRef(false);const recognitionRef=useRef<any>(null);const manualStopRef=useRef(false);const iosLoopPausedRef=useRef(true);const busyAssistantRef=useRef(false);const awaitingCommandRef=useRef(false);const awaitingTimeoutRef=useRef<any>(null)
+ const assistantModeRef=useRef(false);const recognitionRef=useRef<any>(null);const manualStopRef=useRef(false);const iosLoopPausedRef=useRef(true);const busyAssistantRef=useRef(false);const awaitingCommandRef=useRef(false);const awaitingTimeoutRef=useRef<any>(null);const greetedRef=useRef(false)
  const lastQueryRef=useRef<{topics:string[];scope:string}|null>(null)
  const historyRef=useRef<{role:'user'|'assistant';content:string}[]>([])
  useEffect(()=>setPath(window.location.pathname),[])
  useEffect(()=>()=>{assistantModeRef.current=false;try{recognitionRef.current?.stop()}catch{};try{oneShotRecognitionRef.current?.stop()}catch{};try{window.speechSynthesis?.cancel()}catch{}},[])
+ // When launched from the home-screen icon (installed PWA), show one
+ // unmissable "tap to start" card instead of making him hunt for the small
+ // sparkle button — a real click/tap is still required before any browser
+ // will grant microphone access, so this is the smallest possible version
+ // of "just launch it and talk."
+ useEffect(()=>{
+  try{
+   const standalone=window.matchMedia('(display-mode: standalone)').matches||(window.navigator as any).standalone===true
+   if(standalone)setShowLaunchOverlay(true)
+  }catch{}
+ },[])
  if(path.startsWith('/geet'))return null
  // Keeps a short rolling window of the conversation so the classifier can
  // resolve references in the next message ("and tomorrow?", "what about
@@ -410,8 +429,13 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
   if(rest){
    busyAssistantRef.current=true;await runAssistantCommand(rest);busyAssistantRef.current=false
   }else{
-   setAssistantStatus('Yes? Listening for your command…')
-   await speak('Yes, go ahead.')
+   setAssistantStatus('Listening for your command…')
+   if(!greetedRef.current){
+    greetedRef.current=true
+    await speak(`${timeGreeting()}. How may I help you?`)
+   }else{
+    await speak(SHORT_PROMPTS[Math.floor(Math.random()*SHORT_PROMPTS.length)])
+   }
    awaitingCommandRef.current=true
    clearTimeout(awaitingTimeoutRef.current)
    awaitingTimeoutRef.current=setTimeout(()=>{awaitingCommandRef.current=false;if(assistantModeRef.current)setAssistantStatus('Listening for "Hey Ravi"…')},10000)
@@ -448,7 +472,7 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  }
  async function startAssistantMode(){
   if(assistantModeRef.current)return
-  assistantModeRef.current=true;setAssistantMode(true);iosLoopPausedRef.current=false
+  assistantModeRef.current=true;setAssistantMode(true);iosLoopPausedRef.current=false;greetedRef.current=false
   setAssistantStatus('Listening for "Hey Ravi"…')
   const W=window as any,SR=W.SpeechRecognition||W.webkitSpeechRecognition
   if(SR){
@@ -459,11 +483,10 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
    recog.onend=()=>{setListening(false);if(assistantModeRef.current&&!manualStopRef.current){try{recog.start();setListening(true)}catch{}}}
    recognitionRef.current=recog
    try{recog.start();setListening(true)}catch{setAssistantStatus('Could not start listening.');stopAssistantMode();return}
-   speak('Assistant mode is on. Say Hey Ravi any time.')
   }else{
    const nav:any=navigator
    if(nav.mediaDevices&&typeof nav.mediaDevices.getUserMedia==='function'&&(window as any).MediaRecorder){
-    await speak('Assistant mode is on. Say Hey Ravi any time. This uses live transcription continuously while switched on.')
+    setAssistantStatus('Listening for "Hey Ravi"… (continuous transcription while this is on)')
     iosLoopStep()
    }else{
     setAssistantStatus("This browser can't listen continuously. Use the mic button for one command at a time.")
@@ -480,6 +503,7 @@ export default function GlobalRaviVoice(){const[open,setOpen]=useState(false);co
  }
 
  return <>
+  {showLaunchOverlay&&<div className="raviLaunchOverlay" onClick={()=>setShowLaunchOverlay(false)}><div className="raviLaunchCard" onClick={e=>e.stopPropagation()}><Sparkles/><h2>Ravi is ready</h2><p>Tap once to switch on hands-free voice — then just say "Hey Ravi" any time for the rest of this session, no more tapping.</p><button type="button" onClick={()=>{setShowLaunchOverlay(false);startAssistantMode()}}><Mic/>Tap to start Ravi</button><button type="button" className="raviLaunchSkip" onClick={()=>setShowLaunchOverlay(false)}>Not now</button></div></div>}
   <button type="button" className={`raviVoiceFab${recording?' raviVoiceFabRecording':''}`} aria-label="Ravi voice assistant" onClick={()=>{if(recording){stopRecording();return}if(listening&&oneShotRecognitionRef.current){try{oneShotRecognitionRef.current.stop()}catch{};return}if(assistantMode){setOpen(o=>!o);return}if(open){setOpen(false);return}startVoice()}}>{listening?<MicOff/>:<Mic/>}</button>
   <button type="button" className={`raviAssistantToggle${assistantMode?' raviAssistantToggleOn':''}`} aria-label="Toggle Hey Ravi assistant mode" onClick={()=>assistantMode?stopAssistantMode():startAssistantMode()}><Sparkles/></button>
   {assistantMode&&assistantStatus&&<div className="raviAssistantStatus">{assistantStatus}</div>}

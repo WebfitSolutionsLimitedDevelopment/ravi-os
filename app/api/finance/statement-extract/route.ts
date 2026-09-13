@@ -81,8 +81,14 @@ Rules:
       const base64 = fileDataUrl.split(',')[1] || ''
       const buffer = Buffer.from(base64, 'base64')
       const { PDFParse } = await import('pdf-parse')
-      const parser = new PDFParse({ data: buffer })
-      const parsed = await parser.getText().catch(() => null)
+      // pdf.js (which pdf-parse wraps) needs a real canvas implementation even
+      // for plain text extraction, or it throws "DOMMatrix is not defined" on
+      // Vercel's serverless runtime — CanvasFactory (backed by @napi-rs/canvas)
+      // supplies that. See next.config.mjs's serverExternalPackages.
+      const { CanvasFactory } = await import('pdf-parse/worker')
+      const parser = new PDFParse({ data: buffer, CanvasFactory })
+      let parsed = null
+      try { parsed = await parser.getText() } catch { parsed = null } finally { await parser.destroy().catch(() => {}) }
       const text = String(parsed?.text || '').slice(0, 20000)
       if (!text.trim()) return NextResponse.json({ error: "Could not read any text from that PDF — if it's a scanned image, try uploading it as a photo (JPG/PNG) instead." }, { status: 422 })
       aiResult = await aiJson<any>({ system, input: `Statement/document text extracted from the PDF:\n\n${text}`, maxTokens: 1200 })

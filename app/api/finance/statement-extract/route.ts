@@ -1,4 +1,13 @@
 import { NextResponse } from 'next/server'
+// pdf-parse's own troubleshooting guide is explicit that 'pdf-parse/worker'
+// (which supplies a real CanvasFactory via @napi-rs/canvas) must be imported
+// BEFORE 'pdf-parse' itself, as a static top-level import — not a dynamic
+// import() inside the handler — or pdf-parse's internal pdfjs-dist setup can
+// run first and throw "DOMMatrix is not defined" on Vercel's serverless
+// runtime. See next.config.mjs's serverExternalPackages for the other half
+// of this fix.
+import { CanvasFactory } from 'pdf-parse/worker'
+import { PDFParse } from 'pdf-parse'
 import { reminderActor, isFinanceSession } from '../../../../lib/server/ravi-os-auth'
 import { aiEngineAvailable, aiJson } from '../../../../lib/server/ai-client'
 
@@ -80,12 +89,6 @@ Rules:
     if (isPdf) {
       const base64 = fileDataUrl.split(',')[1] || ''
       const buffer = Buffer.from(base64, 'base64')
-      const { PDFParse } = await import('pdf-parse')
-      // pdf.js (which pdf-parse wraps) needs a real canvas implementation even
-      // for plain text extraction, or it throws "DOMMatrix is not defined" on
-      // Vercel's serverless runtime — CanvasFactory (backed by @napi-rs/canvas)
-      // supplies that. See next.config.mjs's serverExternalPackages.
-      const { CanvasFactory } = await import('pdf-parse/worker')
       const parser = new PDFParse({ data: buffer, CanvasFactory })
       let parsed = null
       try { parsed = await parser.getText() } catch { parsed = null } finally { await parser.destroy().catch(() => {}) }

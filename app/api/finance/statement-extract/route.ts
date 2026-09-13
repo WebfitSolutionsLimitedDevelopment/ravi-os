@@ -26,6 +26,10 @@ function monthsBetween(from: string, to: string): number {
 // AI do this math or trust an advertised rate as if it were a real charge.
 // Everything here is computed deterministically from extracted facts.
 function computeStatement(x: any) {
+  // "Ordinary balance" / "recommended payment" / promotional-rate arithmetic
+  // is a credit card concept — pay-in-full-to-avoid-interest doesn't apply to
+  // a bank/savings statement or a payslip, so don't compute or show it there.
+  if (x.documentType !== 'credit_card_statement') return { ordinaryBalance: null, recommendedPayment: null, recommendedPaymentNote: '' }
   const closingBalance = Number.isFinite(Number(x.closingBalance)) ? Number(x.closingBalance) : null
   const promoBalances = Array.isArray(x.promoBalances) ? x.promoBalances.filter((p: any) => p && Number.isFinite(Number(p.amountOwing))) : []
   const promoTotal = promoBalances.reduce((sum: number, p: any) => sum + Number(p.amountOwing || 0), 0)

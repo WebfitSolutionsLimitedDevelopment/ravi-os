@@ -6,6 +6,7 @@ import { AlertTriangle, ArrowLeft, ArrowLeftRight, Banknote, BellRing, BrainCirc
 import styles from './finance.module.css'
 import FinanceLockGate from '../../components/finance-lock-gate'
 import { extractStatement, StatementExtract } from '../../lib/finance-statement-client'
+import { isDebtAccount, accountBalance as calcAccountBalance, computeNetWorth } from '../../lib/finance-calc'
 
 type Account={id:string;name:string;type:string;institution:string;currency:string;openingBalance:number;balanceAsOf:string|null;includeInNetWorth:boolean;active:boolean;notes:string}
 type Tx={id:string;accountId:string;transferAccountId:string;type:string;amount:number;currency:string;baseAmountNzd:number|null;fxRateToNzd:number|null;category:string;merchant:string;date:string;notes:string;source:string;status:string;confidence:number;riskLevel:string;createdAt:string}
@@ -45,74 +46,13 @@ function FinancePageInner(){
   const metrics=useMemo(()=>{const rows=transactions.filter(t=>t.status!=='void'&&t.date.startsWith(currentMonth));const nzd=(t:Tx)=>t.baseAmountNzd??(t.currency==='NZD'?t.amount:0);const income=rows.filter(t=>t.type==='income').reduce((a,t)=>a+nzd(t),0);const expense=rows.filter(t=>t.type==='expense'||t.type==='payment').reduce((a,t)=>a+nzd(t),0);const missingFx=rows.filter(t=>t.currency!=='NZD'&&t.baseAmountNzd==null).length;return{income,expense,net:income-expense,count:rows.length,missingFx}},[transactions,currentMonth])
   const categories=useMemo(()=>{const m=new Map<string,number>();for(const t of transactions.filter(t=>t.date.startsWith(currentMonth)&&(t.type==='expense'||t.type==='payment'))){const v=t.baseAmountNzd??(t.currency==='NZD'?t.amount:0);m.set(t.category,(m.get(t.category)||0)+v)}return [...m.entries()].sort((a,b)=>b[1]-a[1]).slice(0,6)},[transactions,currentMonth])
 
-  // Net worth: group accounts by currency (currency doubles as the country/
-  // region proxy — NZD accounts are the New Zealand dashboard, INR accounts
-  // are the India dashboard) and roll each account's opening balance forward
-  // by its own transactions, in that account's own currency.
-  // For credit_card/liability accounts the tracked number is "amount owed" —
-  // a purchase (expense) INCREASES what's owed, while a payment (or income/
-  // asset/adjustment posted against the card) DECREASES it. That's the
-  // opposite of a bank-like account, where income/asset/adjustment increase
-  // the balance and expense/payment/liability/transfer reduce it.
-  function isDebtAccount(a:Account){return a.type==='credit_card'||a.type==='liability'}
-  // Once a statement has reconciled an account, openingBalance means "the
-  // balance AS OF balanceAsOf" (the statement's own closing figure — the
-  // bank's own reconciled number, far more reliable than anything we might
-  // have summed ourselves from incomplete transaction history). Only
-  // transactions dated AFTER that checkpoint should move the number from
-  // there; anything on or before it is already baked into that figure,
-  // including the statement's own just-imported line items.
-  function accountBalance(a:Account){
-    const debt=isDebtAccount(a)
-    const cutoff=a.balanceAsOf
-    const signed=transactions.filter(t=>t.status!=='void'&&(t.accountId===a.id||t.transferAccountId===a.id)&&(!cutoff||t.date>cutoff)).reduce((sum,t)=>{
-      if(t.transferAccountId===a.id&&t.type==='transfer')return debt?sum-t.amount:sum+t.amount
-      if(t.accountId!==a.id)return sum
-      if(debt){
-        if(t.type==='expense'||t.type==='liability')return sum+t.amount
-        if(t.type==='payment'||t.type==='income'||t.type==='asset'||t.type==='adjustment'||t.type==='transfer')return sum-t.amount
-        return sum
-      }
-      if(t.type==='income'||t.type==='asset'||t.type==='adjustment')return sum+t.amount
-      if(t.type==='expense'||t.type==='payment'||t.type==='liability'||t.type==='transfer')return sum-t.amount
-      return sum
-    },0)
-    return a.openingBalance+signed
-  }
-  const netWorth=useMemo(()=>{
-    const eligible=accounts.filter(a=>a.active&&a.includeInNetWorth)
-    const nzdAccounts=eligible.filter(a=>a.currency==='NZD')
-    const inrAccounts=eligible.filter(a=>a.currency==='INR')
-    const otherAccounts=eligible.filter(a=>a.currency!=='NZD'&&a.currency!=='INR')
-    // balance is always a positive "amount owed" for debt accounts; netBalance
-    // is what actually counts toward net worth (debt subtracts).
-    const withBalances=(list:Account[])=>list.map(a=>{const balance=accountBalance(a);const debt=isDebtAccount(a);return{account:a,balance,debt,netBalance:debt?-balance:balance}})
-    const nzdTotal=withBalances(nzdAccounts).reduce((s,x)=>s+x.netBalance,0)
-    const inrTotal=withBalances(inrAccounts).reduce((s,x)=>s+x.netBalance,0)
-    // Combined total in NZD: NZD accounts count directly. INR accounts convert
-    // using today's live NZD->INR rate (fetched fresh every visit) when it's
-    // available; any other currency falls back to the most recent fxRateToNzd
-    // seen on one of its transactions, and is flagged as unconverted if there
-    // is neither a live rate nor a recorded one — never silently mis-added.
-    let combined=nzdTotal;let unconverted=0
-    const inrTotalNzd=fx?.rate?inrTotal/fx.rate:null
-    if(inrTotalNzd!=null)combined+=inrTotalNzd;else if(inrAccounts.length>0)unconverted+=inrAccounts.length
-    for(const a of otherAccounts){
-      const netBalance=isDebtAccount(a)?-accountBalance(a):accountBalance(a)
-      const rateTx=[...transactions].reverse().find(t=>t.accountId===a.id&&t.fxRateToNzd)
-      if(rateTx?.fxRateToNzd)combined+=netBalance*rateTx.fxRateToNzd
-      else unconverted+=1
-    }
-    // How much would need to move from one country to the other, in NZD
-    // terms, for both dashboards to hold equal value at today's rate.
-    let transferSuggestion:{fromNzToIndia:boolean;nzdAmount:number;inrAmount:number}|null=null
-    if(fx?.rate&&(nzdAccounts.length>0||inrAccounts.length>0)){
-      const diff=nzdTotal-(inrTotalNzd??0)
-      const nzdAmount=Math.abs(diff)/2
-      if(nzdAmount>=1)transferSuggestion={fromNzToIndia:diff>0,nzdAmount,inrAmount:nzdAmount*fx.rate}
-    }
-    return{nzdAccounts:withBalances(nzdAccounts),inrAccounts:withBalances(inrAccounts),otherAccounts:withBalances(otherAccounts),nzdTotal,inrTotal,inrTotalNzd,combined,unconverted,transferSuggestion,hasAny:eligible.length>0}
-  },[accounts,transactions,fx])
+  // Net worth and per-account balances share the exact same math the finance
+  // advice endpoint uses server-side (lib/finance-calc.ts) — so what Ravi
+  // sees here and what the AI review reasons about can never quietly drift
+  // apart. See that file for the debt-aware / statement-reconciled balance
+  // logic and the NZD<->INR combination rules.
+  function accountBalance(a:Account){return calcAccountBalance(a,transactions)}
+  const netWorth=useMemo(()=>computeNetWorth(accounts,transactions,fx?.rate??null),[accounts,transactions,fx])
 
   async function saveTx(e:FormEvent){e.preventDefault();const amount=Number(draft.amount);if(!(amount>=0))return;setSaving(true);try{const body:any={kind:'transaction',type:draft.type,amount,currency:draft.currency.toUpperCase(),category:draft.category||'Other',merchant:draft.merchant,date:draft.date,notes:draft.notes,accountId:draft.accountId||undefined,source:draft.source,confidence:draft.source==='voice'?0.85:1,riskLevel:'low'};if(draft.currency==='NZD')body.baseAmountNzd=amount;else if(draft.baseAmountNzd)body.baseAmountNzd=Number(draft.baseAmountNzd);const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error('Could not save transaction');setDraft(emptyDraft());setFormOpen(false);await load()}catch(e){setVoiceMessage(e instanceof Error?e.message:'Could not save transaction')}finally{setSaving(false)}}
   async function addAccount(e:FormEvent){e.preventDefault();if(!accountName.trim())return;setSaving(true);try{const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'account',name:accountName.trim(),type:accountType,currency:accountCurrency.toUpperCase(),institution})});if(!r.ok)throw new Error('Could not add account');setAccountName('');setInstitution('');setAccountOpen(false);await load()}finally{setSaving(false)}}
@@ -148,6 +88,7 @@ function FinancePageInner(){
         if(d.newAccountCreated)parts.push('a new account was created and linked')
         else if(d.accountId)parts.push('matched to your existing account')
         if(d.transactionsImported)parts.push(`${d.transactionsImported} transaction${d.transactionsImported===1?'':'s'} imported into the ledger`)
+        if(typeof d.reconciliationAdjustment==='number'&&d.reconciliationAdjustment!==0)parts.push(`a ${money(Math.abs(d.reconciliationAdjustment),preview.currency)} catch-up entry was added for activity the line items didn't cover`)
         setSaveNotice(parts.length?`Saved — ${parts.join(' and ')}.`:'Saved to your statement history.')
       }
       await Promise.all([loadStatements(),load()])
@@ -174,7 +115,7 @@ function FinancePageInner(){
 
     {tab==='ledger'&&<section className={styles.card}><div className={styles.cardHead}><div><p>LEDGER</p><h2>Transactions</h2></div><button onClick={()=>{setDraft(emptyDraft());setFormOpen(v=>!v)}}><Plus/>Add</button></div>{formOpen&&<form className={styles.form} onSubmit={saveTx}><div className={styles.row3}><label>Type<select value={draft.type} onChange={e=>setDraft({...draft,type:e.target.value})}><option value='expense'>Expense</option><option value='income'>Income</option><option value='payment'>Payment</option><option value='transfer'>Transfer</option><option value='asset'>Asset</option><option value='liability'>Liability</option><option value='adjustment'>Adjustment</option></select></label><label>Amount<input type='number' step='0.01' value={draft.amount} onChange={e=>setDraft({...draft,amount:e.target.value})}/></label><label>Currency<input value={draft.currency} maxLength={3} onChange={e=>setDraft({...draft,currency:e.target.value.toUpperCase()})}/></label></div>{draft.currency!=='NZD'&&<label>NZD value for reporting<input type='number' step='0.01' value={draft.baseAmountNzd} onChange={e=>setDraft({...draft,baseAmountNzd:e.target.value})} placeholder='Enter converted NZD amount'/></label>}<div className={styles.row2}><label>Category<input value={draft.category} onChange={e=>setDraft({...draft,category:e.target.value})}/></label><label>Merchant / payee<input value={draft.merchant} onChange={e=>setDraft({...draft,merchant:e.target.value})}/></label></div><div className={styles.row2}><label>Date<input type='date' value={draft.date} onChange={e=>setDraft({...draft,date:e.target.value})}/></label><label>Account<select value={draft.accountId} onChange={e=>setDraft({...draft,accountId:e.target.value})}><option value=''>Not assigned</option>{accounts.filter(a=>a.active).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label></div><label>Notes<textarea value={draft.notes} onChange={e=>setDraft({...draft,notes:e.target.value})}/></label><button className={styles.primary} disabled={saving||!draft.amount}>{saving?'Saving…':'Review complete · Post transaction'}</button></form>}{loading?<div className={styles.empty}>Loading…</div>:transactions.length===0?<div className={styles.empty}><CreditCard/><b>No transactions yet</b><span>Start with an expense, income, payment or voice entry.</span></div>:<div className={styles.ledger}>{transactions.map(t=><article key={t.id}><span className={`${styles.txIcon} ${styles[t.type]||''}`}>{t.type==='income'?'+':'−'}</span><div><b>{t.merchant||t.category}</b><small>{t.category} · {t.date} · {t.source}</small>{t.notes&&<p>{t.notes}</p>}</div><strong>{t.type==='income'?'+':'−'}{money(t.amount,t.currency)}</strong><button aria-label='Remove' onClick={()=>removeTx(t.id)}><Trash2/></button></article>)}</div>}</section>}
 
-    {tab==='accounts'&&<section className={styles.card}><div className={styles.cardHead}><div><p>ACCOUNTS</p><h2>Banks, cards, cash and assets</h2></div><button onClick={()=>setAccountOpen(v=>!v)}><Plus/>Account</button></div>{accountOpen&&<form className={styles.form} onSubmit={addAccount}><div className={styles.row2}><label>Account name<input value={accountName} onChange={e=>setAccountName(e.target.value)} placeholder='e.g. ANZ Everyday'/></label><label>Type<select value={accountType} onChange={e=>setAccountType(e.target.value)}><option value='bank'>Bank</option><option value='cash'>Cash</option><option value='credit_card'>Credit card</option><option value='fixed_deposit'>Fixed deposit</option><option value='investment'>Investment</option><option value='asset'>Asset</option><option value='liability'>Liability</option><option value='other'>Other</option></select></label></div><div className={styles.row2}><label>Institution<input value={institution} onChange={e=>setInstitution(e.target.value)}/></label><label>Currency<input value={accountCurrency} maxLength={3} onChange={e=>setAccountCurrency(e.target.value.toUpperCase())} placeholder='NZD or INR'/></label></div><button className={styles.primary} disabled={saving||!accountName.trim()}>Add account</button></form>}<div className={styles.accounts}>{accounts.length===0?<div className={styles.empty}><Landmark/><b>No financial accounts added</b><span>Add your New Zealand and India accounts here — currency decides which country dashboard each one shows up in.</span></div>:accounts.map(a=>{const debt=isDebtAccount(a);const bal=accountBalance(a);return <div key={a.id}><span>{a.type==='credit_card'?<CreditCard/>:<Building2/>}</span><div><b>{a.name}</b><small>{a.institution||a.type} · {a.currency}</small></div><span className={debt?styles.negative:''} style={{textAlign:'right'}}><b>{money(bal,a.currency)}</b><small style={{display:'block',opacity:.7}}>{debt?'Owed':'Balance'}{a.balanceAsOf?` · as of ${a.balanceAsOf}`:''}</small></span><em>{a.active?'Active':'Inactive'}</em></div>})}</div></section>}
+    {tab==='accounts'&&<section className={styles.card}><div className={styles.cardHead}><div><p>ACCOUNTS</p><h2>Banks, cards, cash and assets</h2></div><button onClick={()=>setAccountOpen(v=>!v)}><Plus/>Account</button></div>{accountOpen&&<form className={styles.form} onSubmit={addAccount}><div className={styles.row2}><label>Account name<input value={accountName} onChange={e=>setAccountName(e.target.value)} placeholder='e.g. ANZ Everyday'/></label><label>Type<select value={accountType} onChange={e=>setAccountType(e.target.value)}><option value='bank'>Bank</option><option value='cash'>Cash</option><option value='credit_card'>Credit card</option><option value='fixed_deposit'>Fixed deposit</option><option value='investment'>Investment</option><option value='asset'>Asset</option><option value='liability'>Liability</option><option value='other'>Other</option></select></label></div><div className={styles.row2}><label>Institution<input value={institution} onChange={e=>setInstitution(e.target.value)}/></label><label>Currency<input value={accountCurrency} maxLength={3} onChange={e=>setAccountCurrency(e.target.value.toUpperCase())} placeholder='NZD or INR'/></label></div><button className={styles.primary} disabled={saving||!accountName.trim()}>Add account</button></form>}<div className={styles.accounts}>{accounts.length===0?<div className={styles.empty}><Landmark/><b>No financial accounts added</b><span>Add your New Zealand and India accounts here — currency decides which country dashboard each one shows up in.</span></div>:accounts.map(a=>{const debt=isDebtAccount(a.type);const bal=accountBalance(a);return <div key={a.id}><span>{a.type==='credit_card'?<CreditCard/>:<Building2/>}</span><div><b>{a.name}</b><small>{a.institution||a.type} · {a.currency}</small></div><span className={debt?styles.negative:''} style={{textAlign:'right'}}><b>{money(bal,a.currency)}</b><small style={{display:'block',opacity:.7}}>{debt?'Owed':'Balance'}{a.balanceAsOf?` · as of ${a.balanceAsOf}`:''}</small></span><em>{a.active?'Active':'Inactive'}</em></div>})}</div></section>}
 
     {tab==='statements'&&<section className={styles.card}>
       <div className={styles.cardHead}><div><p>DOCUMENT INTELLIGENCE</p><h2>Statements &amp; payslips</h2></div><ShieldCheck/></div>

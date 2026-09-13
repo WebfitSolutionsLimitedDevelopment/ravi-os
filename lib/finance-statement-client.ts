@@ -1,6 +1,7 @@
 'use client'
 
 export type PromoBalance={label:string;startDate:string;rate:string;rateApplicableUntil:string;purchaseAmount:number;amountOwing:number}
+export type StatementTransaction={date:string;description:string;amount:number;direction:'credit'|'debit';category:string}
 export type StatementExtract={
   documentType:'credit_card_statement'|'bank_statement'|'payslip'|'other'
   institution:string;accountLabel:string;currency:string
@@ -13,6 +14,7 @@ export type StatementExtract={
   standardPurchaseRate:number|null;standardCashAdvanceRate:number|null
   recommendedPayment:number|null;recommendedPaymentNote:string
   payslip:{employer:string;payDate:string;grossPay:number;netPay:number}|null
+  transactions:StatementTransaction[]
   confidence:number;engine?:string;rawExtract?:any
 }
 

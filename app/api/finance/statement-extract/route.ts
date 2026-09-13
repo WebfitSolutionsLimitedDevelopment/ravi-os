@@ -66,7 +66,7 @@ export async function POST(request: Request) {
     const isImage = /^data:image\//.test(fileDataUrl)
     if (!isPdf && !isImage) return NextResponse.json({ error: 'Upload a PDF or an image (JPG/PNG) of the statement or payslip' }, { status: 400 })
 
-    const system = `You read financial documents for a personal finance tracker: credit card statements, bank statements or payslips. Return ONLY valid JSON with exactly these keys: documentType, institution, accountLabel, currency, statementStart, statementEnd, closingBalance, minimumDue, paymentDueDate, creditLimit, openingBalance, promoBalances, interestCharged, standardPurchaseRate, standardCashAdvanceRate, payslip, confidence.
+    const system = `You read financial documents for a personal finance tracker: credit card statements, bank statements or payslips. Return ONLY valid JSON with exactly these keys: documentType, institution, accountLabel, currency, statementStart, statementEnd, closingBalance, minimumDue, paymentDueDate, creditLimit, openingBalance, promoBalances, interestCharged, standardPurchaseRate, standardCashAdvanceRate, payslip, transactions, confidence.
 Rules:
 - documentType: one of "credit_card_statement","bank_statement","payslip","other" — pick the best match.
 - institution: the bank/employer name (e.g. "ASB", "ANZ", "ICICI Bank").
@@ -82,6 +82,7 @@ Rules:
 - interestCharged: a REAL interest charge that appears as an actual transaction/line-item on THIS statement's transaction list (e.g. "Interest Charged $12.40"). This is completely different from the advertised standard interest rate shown in the terms section — do NOT report a rate (like "13.50% p.a.") here, and do NOT estimate or calculate what interest "would" be. If there is no actual interest-charged line in the transaction list, return null.
 - standardPurchaseRate / standardCashAdvanceRate: the advertised annual percentage rates for reference (numbers like 13.5, 22.95), or null. These are disclosures, not charges.
 - payslip: if documentType is "payslip", {employer,payDate,grossPay,netPay} (payDate as YYYY-MM-DD, amounts as numbers), otherwise null.
+- transactions: for a credit_card_statement or bank_statement ONLY (empty array for payslip/other), every individual line item you can see in the transaction list — every purchase, payment, deposit, withdrawal, fee. Each entry: {date (YYYY-MM-DD, use the statement's year if only day/month is printed), description (merchant or narration, short), amount (a positive number), direction ("debit" for money leaving the account — a purchase, a withdrawal, a fee — or "credit" for money coming in — a payment received, a deposit, a refund), category (your best short guess: "Groceries","Dining","Fuel","Transport","Shopping","Subscriptions","Utilities","Rent","Salary","Transfer","Card Payment","Fees","Interest","Other")}. List every line item you can find, in the order they appear, up to 60. Do not summarize or merge line items into totals — one entry per transaction line. Never invent a transaction that is not printed.
 - confidence: 0 to 1 for the overall extraction.
 - Never invent a field you cannot actually see on the document. Use null / empty string / empty array instead.`
 
@@ -94,9 +95,9 @@ Rules:
       try { parsed = await parser.getText() } catch { parsed = null } finally { await parser.destroy().catch(() => {}) }
       const text = String(parsed?.text || '').slice(0, 20000)
       if (!text.trim()) return NextResponse.json({ error: "Could not read any text from that PDF — if it's a scanned image, try uploading it as a photo (JPG/PNG) instead." }, { status: 422 })
-      aiResult = await aiJson<any>({ system, input: `Statement/document text extracted from the PDF:\n\n${text}`, maxTokens: 1200 })
+      aiResult = await aiJson<any>({ system, input: `Statement/document text extracted from the PDF:\n\n${text}`, maxTokens: 4000 })
     } else {
-      aiResult = await aiJson<any>({ system, input: 'Read the attached financial document image.', imageDataUrl: fileDataUrl, maxTokens: 1200 })
+      aiResult = await aiJson<any>({ system, input: 'Read the attached financial document image.', imageDataUrl: fileDataUrl, maxTokens: 4000 })
     }
 
     const raw = aiResult.data || {}
@@ -128,8 +129,31 @@ Rules:
       payslip: documentType === 'payslip' && raw.payslip ? raw.payslip : null,
       confidence: Math.max(0, Math.min(1, Number(raw.confidence || 0.6))),
     }
+    const CATEGORIES = ['Groceries', 'Dining', 'Fuel', 'Transport', 'Shopping', 'Subscriptions', 'Utilities', 'Rent', 'Salary', 'Transfer', 'Card Payment', 'Fees', 'Interest', 'Other']
+    let transactions = Array.isArray(raw.transactions) ? raw.transactions
+      .filter((t: any) => t && Number.isFinite(Number(t.amount)) && Number(t.amount) > 0)
+      .slice(0, 60)
+      .map((t: any) => ({
+        date: /^\d{4}-\d{2}-\d{2}$/.test(String(t.date || '')) ? t.date : (extracted.statementEnd || ''),
+        description: String(t.description || '').slice(0, 140) || 'Transaction',
+        amount: Number(t.amount),
+        direction: t.direction === 'credit' ? 'credit' : 'debit',
+        category: CATEGORIES.includes(t.category) ? t.category : 'Other',
+      })) : []
+    // Payslips don't get an AI-extracted transaction list (there's only one
+    // line that matters); synthesize the net-pay income entry ourselves from
+    // the fields already extracted, so it flows into the ledger the same way.
+    if (documentType === 'payslip' && extracted.payslip?.netPay) {
+      transactions = [{
+        date: extracted.payslip.payDate || extracted.statementEnd || '',
+        description: `Salary — ${extracted.payslip.employer || extracted.institution || 'Employer'}`,
+        amount: Number(extracted.payslip.netPay),
+        direction: 'credit',
+        category: 'Salary',
+      }]
+    }
     const computed = computeStatement(extracted)
-    return NextResponse.json({ ...extracted, ...computed, engine: aiResult.engine, rawExtract: raw })
+    return NextResponse.json({ ...extracted, ...computed, transactions, engine: aiResult.engine, rawExtract: raw })
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : 'Unable to read that document' }, { status: 500 })
   }

@@ -49,13 +49,17 @@ export async function POST(request:Request){
   if(!response)return NextResponse.json({error:'Finance session required'},{status:428})
   if(!response.ok)return relay(response)
   const data=await response.json().catch(()=>null)
+  // A duplicate is the same statement we already have on file — surface it
+  // as-is (so the UI can say "already saved") without creating a second
+  // dashboard reminder for a bill Ravi has already been told about.
+  if(data?.duplicate)return NextResponse.json(data,{status:200})
   const statement=data?.statement
   if(statement){
     try{
       const reminderId=await createDueReminder(statement)
       if(reminderId){
         const linked=await financeAction('statement_set_reminder',{id:statement.id,reminderId})
-        if(linked?.ok){const linkedData=await linked.json().catch(()=>null);if(linkedData?.statement)return NextResponse.json({statement:linkedData.statement},{status:201})}
+        if(linked?.ok){const linkedData=await linked.json().catch(()=>null);if(linkedData?.statement)return NextResponse.json({...data,statement:linkedData.statement},{status:201})}
       }
     }catch{}
   }

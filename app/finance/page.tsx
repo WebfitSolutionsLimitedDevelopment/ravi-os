@@ -2,11 +2,12 @@
 
 import Link from 'next/link'
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, Banknote, BellRing, BrainCircuit, Building2, CalendarClock, CheckCircle2, CircleDollarSign, Coins, CreditCard, FileText, Globe2, IndianRupee, Landmark, Loader2, Mic, MicOff, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Upload, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, Banknote, BellRing, BrainCircuit, Building2, CalendarClock, CheckCircle2, CircleDollarSign, Coins, CreditCard, FileText, Globe2, IndianRupee, Landmark, Loader2, Mic, MicOff, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, TrendingDown, TrendingUp, Upload, WalletCards } from 'lucide-react'
 import styles from './finance.module.css'
 import FinanceLockGate from '../../components/finance-lock-gate'
 import { extractStatement, StatementExtract } from '../../lib/finance-statement-client'
 import { isDebtAccount, accountBalance as calcAccountBalance, computeNetWorth } from '../../lib/finance-calc'
+import { detectUpcomingCharges, upcomingTotals } from '../../lib/finance-recurring'
 
 type Account={id:string;name:string;type:string;institution:string;currency:string;openingBalance:number;balanceAsOf:string|null;includeInNetWorth:boolean;active:boolean;notes:string}
 type Tx={id:string;accountId:string;transferAccountId:string;type:string;amount:number;currency:string;baseAmountNzd:number|null;fxRateToNzd:number|null;category:string;merchant:string;date:string;notes:string;source:string;status:string;confidence:number;riskLevel:string;createdAt:string}
@@ -53,6 +54,14 @@ function FinancePageInner(){
   // logic and the NZD<->INR combination rules.
   function accountBalance(a:Account){return calcAccountBalance(a,transactions)}
   const netWorth=useMemo(()=>computeNetWorth(accounts,transactions,fx?.rate??null),[accounts,transactions,fx])
+
+  // "Every fifteen days, weekly, whatever — that also we have to consider."
+  // Learned purely from the ledger's own history (no bill needs configuring):
+  // any merchant that has hit the same account on a roughly regular beat at
+  // least twice gets projected to its next likely date and amount, so Ravi
+  // can see what's coming before the money is already gone.
+  const upcoming=useMemo(()=>detectUpcomingCharges(transactions,{todayStr:today()}),[transactions])
+  const upcomingByCcy=useMemo(()=>upcomingTotals(upcoming),[upcoming])
 
   async function saveTx(e:FormEvent){e.preventDefault();const amount=Number(draft.amount);if(!(amount>=0))return;setSaving(true);try{const body:any={kind:'transaction',type:draft.type,amount,currency:draft.currency.toUpperCase(),category:draft.category||'Other',merchant:draft.merchant,date:draft.date,notes:draft.notes,accountId:draft.accountId||undefined,source:draft.source,confidence:draft.source==='voice'?0.85:1,riskLevel:'low'};if(draft.currency==='NZD')body.baseAmountNzd=amount;else if(draft.baseAmountNzd)body.baseAmountNzd=Number(draft.baseAmountNzd);const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error('Could not save transaction');setDraft(emptyDraft());setFormOpen(false);await load()}catch(e){setVoiceMessage(e instanceof Error?e.message:'Could not save transaction')}finally{setSaving(false)}}
   async function addAccount(e:FormEvent){e.preventDefault();if(!accountName.trim())return;setSaving(true);try{const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'account',name:accountName.trim(),type:accountType,currency:accountCurrency.toUpperCase(),institution})});if(!r.ok)throw new Error('Could not add account');setAccountName('');setInstitution('');setAccountOpen(false);await load()}finally{setSaving(false)}}
@@ -107,6 +116,24 @@ function FinancePageInner(){
     <nav className={styles.tabs}><button className={tab==='overview'?styles.active:''} onClick={()=>setTab('overview')}>Overview</button><button className={tab==='ledger'?styles.active:''} onClick={()=>setTab('ledger')}>Ledger</button><button className={tab==='accounts'?styles.active:''} onClick={()=>setTab('accounts')}>Accounts</button><button className={tab==='statements'?styles.active:''} onClick={()=>setTab('statements')}>Statements</button><button className={tab==='networth'?styles.active:''} onClick={()=>setTab('networth')}>Net worth</button></nav>
 
     {error&&<div className={styles.error}>{error}</div>}
+    {tab==='overview'&&<section className={styles.card} style={{maxWidth:1100,margin:'0 auto 12px'}}>
+      <div className={styles.cardHead}><div><p>CASH FLOW FORECAST</p><h2>Upcoming expenditure</h2></div><CalendarClock/></div>
+      {upcoming.length===0?<div className={styles.empty}><CalendarClock/><b>Still learning your patterns</b><span>Once a bill has hit the same account at least twice on a regular beat — weekly, fortnightly, monthly, whatever it turns out to be — it'll show up here with its next expected date and amount, so nothing lands as a surprise.</span></div>:<>
+        <div className={styles.upcomingTotals}>{Object.entries(upcomingByCcy).map(([ccy,t])=><div key={ccy}><small>EXPECTED OUT · NEXT 45 DAYS</small><b>{money(t.expense,ccy)}</b>{t.income>0&&<span>+{money(t.income,ccy)} expected in over the same period</span>}</div>)}</div>
+        <div className={styles.upcomingList}>{upcoming.map(c=>{
+          const acct=accounts.find(a=>a.id===c.accountId)
+          const dueLabel=c.daysUntil<0?`${Math.abs(c.daysUntil)}d overdue`:c.daysUntil===0?'due today':`in ${c.daysUntil}d`
+          return <article className={styles.upcomingRow} key={c.key}>
+            <span className={styles.upcomingDate}><b>{c.nextDueDate.slice(8,10)}</b><small>{new Date(`${c.nextDueDate}T00:00:00Z`).toLocaleDateString('en-NZ',{month:'short'})}</small></span>
+            <div><b>{c.merchant}</b><small>{c.cadence} · {acct?.name||c.category}{c.confidence<0.6?' · low confidence':''}</small></div>
+            <span className={c.direction==='income'?'':styles.negative} style={{textAlign:'right'}}>
+              <b>{c.direction==='income'?'+':'−'}{money(c.predictedAmount,c.currency)}</b>
+              <small style={{display:'flex',alignItems:'center',gap:3,justifyContent:'flex-end',opacity:.75}}>{c.trend==='rising'&&<TrendingUp size={9}/>}{c.trend==='falling'&&<TrendingDown size={9}/>}{dueLabel}</small>
+            </span>
+          </article>
+        })}</div>
+      </>}
+    </section>}
     {tab==='overview'&&<div className={styles.grid}>
       <section className={styles.card}><div className={styles.cardHead}><div><p>CONTROLLER</p><h2>Intelligent review</h2></div><button onClick={review} disabled={reviewing}><BrainCircuit/>{reviewing?'Reviewing…':'Review finances'}</button></div>{!advice?<div className={styles.empty}><BrainCircuit/><b>Run a finance review</b><span>Ravi OS will analyse bookkeeping quality, cash flow, controls and next actions from your actual ledger.</span></div>:<div className={styles.advice}><div className={`${styles.health} ${styles[advice.health]}`}>{advice.health.toUpperCase()}</div><h3>{advice.headline}</h3>{advice.observations?.map((x,i)=><p key={i}>{x}</p>)}<h4>Recommended actions</h4>{advice.actions?.map((x,i)=><div className={styles.action} key={i}><b>{x.title}</b><span>{x.why}</span><em>{x.priority}</em></div>)}</div>}</section>
       <section className={styles.card}><div className={styles.cardHead}><div><p>SPENDING</p><h2>Top categories this month</h2></div><WalletCards/></div>{categories.length===0?<div className={styles.empty}><WalletCards/><b>No spending recorded</b><span>Add transactions manually or by voice.</span></div>:<div className={styles.categories}>{categories.map(([name,value])=><div key={name}><span><b>{name}</b><small>{money(value)}</small></span><i style={{width:`${Math.max(6,(value/(categories[0]?.[1]||1))*100)}%`}}/></div>)}</div>}</section>

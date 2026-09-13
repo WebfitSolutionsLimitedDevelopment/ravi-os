@@ -8,10 +8,14 @@ import styles from './geet.module.css'
 
 type Reminder={id:string;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;posterUrl?:string;createdBy?:string;updatedBy?:string}
 
-function stamp(r:Reminder){return new Date(`${r.date}T${r.time||'23:59'}:00`).getTime()}
+// Reminder times are usually "HH:MM" but some (bulk-imported/shared ones)
+// come through as "HH:MM:SS" — naively appending ":00" to those produces
+// an invalid date, which broke sorting and showed "NaNd left" countdowns.
+function normTime(t:string){const m=String(t||'').match(/^(\d{1,2}):(\d{2})/);return m?`${m[1].padStart(2,'0')}:${m[2]}`:'23:59'}
+function stamp(r:Reminder){return new Date(`${r.date}T${normTime(r.time)}:00`).getTime()}
 function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue';const m=Math.max(1,Math.round(d/60000));if(m<60)return`${m}m left`;const h=Math.floor(m/60);if(h<24)return`${h}h ${m%60}m left`;const days=Math.floor(h/24);return`${days}d ${h%24}h left`}
 function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)return styles.urgent;if(h<=48)return styles.tomorrow;if(h<=72)return styles.soon;return styles.later}
-function dueAt(date:string,time:string){return new Date(`${date}T${time}:00`).toISOString()}
+function dueAt(date:string,time:string){return new Date(`${date}T${normTime(time)}:00`).toISOString()}
 function formatClock(now:Date,timeZone:string){return new Intl.DateTimeFormat('en-NZ',{timeZone,hour:'numeric',minute:'2-digit'}).format(now)}
 function GeetPhoto({small=false}:{small?:boolean}){return <div className={small?styles.profilePhotoSmall:styles.profilePhoto}><img src={GEET_PHOTO_DATA_URI} alt="Geet"/></div>}
 

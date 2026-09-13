@@ -10,11 +10,15 @@ import styles from './reminders.module.css'
 type Reminder={id:string;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;posterUrl?:string;createdBy?:string;legacyClientId?:string;notified?:boolean}
 type LegacyReminder={id:number;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;imageDataUrl?:string;notified?:boolean}
 const storageKey='ravi-os-reminders-v2'
-function stamp(r:Reminder){return new Date(`${r.date}T${r.time||'23:59'}:00`).getTime()}
+// Reminder times are usually "HH:MM" but some (bulk-imported/shared ones)
+// come through as "HH:MM:SS" — naively appending ":00" to those produces
+// an invalid date, which broke sorting and showed "NaNd left" countdowns.
+function normTime(t:string){const m=String(t||'').match(/^(\d{1,2}):(\d{2})/);return m?`${m[1].padStart(2,'0')}:${m[2]}`:'23:59'}
+function stamp(r:Reminder){return new Date(`${r.date}T${normTime(r.time)}:00`).getTime()}
 function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)return'today';if(h<=48)return'tomorrow';if(h<=72)return'soon';return'later'}
 function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue';const m=Math.max(1,Math.round(d/60000));if(m<60)return`${m}m left`;const h=Math.floor(m/60);if(h<24)return`${h}h ${m%60}m left`;const days=Math.floor(h/24);return`${days}d ${h%24}h left`}
-function dueAt(date:string,time:string){return new Date(`${date}T${time}:00`).toISOString()}
-function calendarUrl(r:Reminder){const start=new Date(`${r.date}T${r.time}:00`);const end=new Date(start.getTime()+1800000);const fmt=(d:Date)=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z');const p=new URLSearchParams({action:'TEMPLATE',text:r.title,dates:`${fmt(start)}/${fmt(end)}`,details:r.notes||'Created from Ravi OS',ctz:'Pacific/Auckland'});return`https://calendar.google.com/calendar/render?${p.toString()}`}
+function dueAt(date:string,time:string){return new Date(`${date}T${normTime(time)}:00`).toISOString()}
+function calendarUrl(r:Reminder){const start=new Date(`${r.date}T${normTime(r.time)}:00`);const end=new Date(start.getTime()+1800000);const fmt=(d:Date)=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z');const p=new URLSearchParams({action:'TEMPLATE',text:r.title,dates:`${fmt(start)}/${fmt(end)}`,details:r.notes||'Created from Ravi OS',ctz:'Pacific/Auckland'});return`https://calendar.google.com/calendar/render?${p.toString()}`}
 function readLocal():Reminder[]{try{const rows:LegacyReminder[]=JSON.parse(localStorage.getItem(storageKey)||'[]');return rows.map(r=>({id:`local-${r.id}`,title:r.title,notes:r.notes||'',date:r.date,time:r.time,source:r.source,imageName:r.imageName,posterUrl:r.imageDataUrl,createdBy:'ravi',legacyClientId:String(r.id),notified:r.notified}))}catch{return[]}}
 function writeLocal(rows:LegacyReminder[]){localStorage.setItem(storageKey,JSON.stringify(rows))}
 function mergeReminders(server:Reminder[],local:Reminder[]){const serverLegacy=new Set(server.map(r=>r.legacyClientId).filter(Boolean));return [...server,...local.filter(r=>!r.legacyClientId||!serverLegacy.has(r.legacyClientId))].sort((a,b)=>stamp(a)-stamp(b))}

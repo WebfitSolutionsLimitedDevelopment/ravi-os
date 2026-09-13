@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, Banknote, BrainCircuit, Building2, CalendarClock, CheckCircle2, CircleDollarSign, Coins, CreditCard, FileText, Globe2, IndianRupee, Landmark, Loader2, Mic, MicOff, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Upload, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, Banknote, BellRing, BrainCircuit, Building2, CalendarClock, CheckCircle2, CircleDollarSign, Coins, CreditCard, FileText, Globe2, IndianRupee, Landmark, Loader2, Mic, MicOff, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Upload, WalletCards } from 'lucide-react'
 import styles from './finance.module.css'
 import FinanceLockGate from '../../components/finance-lock-gate'
 import { extractStatement, StatementExtract } from '../../lib/finance-statement-client'
@@ -10,7 +10,8 @@ import { extractStatement, StatementExtract } from '../../lib/finance-statement-
 type Account={id:string;name:string;type:string;institution:string;currency:string;openingBalance:number;includeInNetWorth:boolean;active:boolean;notes:string}
 type Tx={id:string;accountId:string;transferAccountId:string;type:string;amount:number;currency:string;baseAmountNzd:number|null;fxRateToNzd:number|null;category:string;merchant:string;date:string;notes:string;source:string;status:string;confidence:number;riskLevel:string;createdAt:string}
 type Advice={headline:string;health:'good'|'watch'|'attention';observations:string[];actions:{title:string;why:string;priority:string}[];controls:string[];questions:string[]}
-type Statement={id:string;accountId:string;documentType:string;institution:string;accountLabel:string;currency:string;statementStart:string|null;statementEnd:string|null;closingBalance:number|null;minimumDue:number|null;paymentDueDate:string|null;creditLimit:number|null;openingBalance:number|null;promoBalances:{label:string;startDate:string;rate:string;rateApplicableUntil:string;purchaseAmount:number;amountOwing:number}[];ordinaryBalance:number|null;interestCharged:number|null;standardPurchaseRate:number|null;standardCashAdvanceRate:number|null;recommendedPayment:number|null;recommendedPaymentNote:string;source:string;confidence:number;createdAt:string}
+type Statement={id:string;accountId:string;documentType:string;institution:string;accountLabel:string;currency:string;statementStart:string|null;statementEnd:string|null;closingBalance:number|null;minimumDue:number|null;paymentDueDate:string|null;creditLimit:number|null;openingBalance:number|null;promoBalances:{label:string;startDate:string;rate:string;rateApplicableUntil:string;purchaseAmount:number;amountOwing:number}[];ordinaryBalance:number|null;interestCharged:number|null;standardPurchaseRate:number|null;standardCashAdvanceRate:number|null;recommendedPayment:number|null;recommendedPaymentNote:string;reminderId:string|null;source:string;confidence:number;createdAt:string}
+type FxRate={pair:string;rate:number;asOf:string;fetchedAt:string;source:string}
 
 type Draft={type:string;amount:string;currency:string;category:string;merchant:string;date:string;notes:string;accountId:string;baseAmountNzd:string;source:'manual'|'voice'}
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
@@ -31,10 +32,14 @@ function FinancePageInner(){
 
   const[statements,setStatements]=useState<Statement[]>([]);const[statementsLoading,setStatementsLoading]=useState(true);const[extracting,setExtracting]=useState(false);const[extractError,setExtractError]=useState('');const[preview,setPreview]=useState<StatementExtract|null>(null);const[savingStatement,setSavingStatement]=useState(false)
   const fileInputRef=useRef<HTMLInputElement>(null)
+  const[fx,setFx]=useState<FxRate|null>(null);const[fxLoading,setFxLoading]=useState(true);const[fxError,setFxError]=useState('');const[convertNzd,setConvertNzd]=useState('100')
 
   const load=async()=>{setLoading(true);try{const r=await fetch('/api/finance',{cache:'no-store'});if(!r.ok)throw new Error('Finance data could not be loaded');const d=await r.json();setAccounts(d.accounts||[]);setTransactions(d.transactions||[]);setError('')}catch(e){setError(e instanceof Error?e.message:'Finance data could not be loaded')}finally{setLoading(false)}}
   const loadStatements=async()=>{setStatementsLoading(true);try{const r=await fetch('/api/finance/statements',{cache:'no-store'});if(!r.ok)throw new Error('Statement history could not be loaded');const d=await r.json();setStatements(d.statements||[])}catch(e){setExtractError(e instanceof Error?e.message:'Statement history could not be loaded')}finally{setStatementsLoading(false)}}
-  useEffect(()=>{load();loadStatements()},[])
+  // Fetched fresh every time Ravi opens Finance, not cached from a previous
+  // visit — so the New Zealand <-> India conversion is always today's rate.
+  const loadFx=async()=>{setFxLoading(true);setFxError('');try{const r=await fetch('/api/finance/fx',{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not fetch a live exchange rate');setFx(d)}catch(e){setFxError(e instanceof Error?e.message:'Could not fetch a live exchange rate')}finally{setFxLoading(false)}}
+  useEffect(()=>{load();loadStatements();loadFx()},[])
 
   const currentMonth=new Intl.DateTimeFormat('en-CA',{timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit'}).format(new Date())
   const metrics=useMemo(()=>{const rows=transactions.filter(t=>t.status!=='void'&&t.date.startsWith(currentMonth));const nzd=(t:Tx)=>t.baseAmountNzd??(t.currency==='NZD'?t.amount:0);const income=rows.filter(t=>t.type==='income').reduce((a,t)=>a+nzd(t),0);const expense=rows.filter(t=>t.type==='expense'||t.type==='payment').reduce((a,t)=>a+nzd(t),0);const missingFx=rows.filter(t=>t.currency!=='NZD'&&t.baseAmountNzd==null).length;return{income,expense,net:income-expense,count:rows.length,missingFx}},[transactions,currentMonth])
@@ -62,21 +67,30 @@ function FinancePageInner(){
     const withBalances=(list:Account[])=>list.map(a=>({account:a,balance:accountBalance(a)}))
     const nzdTotal=withBalances(nzdAccounts).reduce((s,x)=>s+x.balance,0)
     const inrTotal=withBalances(inrAccounts).reduce((s,x)=>s+x.balance,0)
-    // Combined total in NZD: NZD accounts count directly; other-currency accounts
-    // are converted using the most recent fxRateToNzd seen on any of their
-    // transactions — if no rate has ever been recorded, that account is
-    // flagged as needing an FX rate rather than silently mis-added.
+    // Combined total in NZD: NZD accounts count directly. INR accounts convert
+    // using today's live NZD->INR rate (fetched fresh every visit) when it's
+    // available; any other currency falls back to the most recent fxRateToNzd
+    // seen on one of its transactions, and is flagged as unconverted if there
+    // is neither a live rate nor a recorded one — never silently mis-added.
     let combined=nzdTotal;let unconverted=0
-    for(const list of [inrAccounts,otherAccounts]){
-      for(const a of list){
-        const balance=accountBalance(a)
-        const rateTx=[...transactions].reverse().find(t=>t.accountId===a.id&&t.fxRateToNzd)
-        if(rateTx?.fxRateToNzd)combined+=balance*rateTx.fxRateToNzd
-        else unconverted+=1
-      }
+    const inrTotalNzd=fx?.rate?inrTotal/fx.rate:null
+    if(inrTotalNzd!=null)combined+=inrTotalNzd;else if(inrAccounts.length>0)unconverted+=inrAccounts.length
+    for(const a of otherAccounts){
+      const balance=accountBalance(a)
+      const rateTx=[...transactions].reverse().find(t=>t.accountId===a.id&&t.fxRateToNzd)
+      if(rateTx?.fxRateToNzd)combined+=balance*rateTx.fxRateToNzd
+      else unconverted+=1
     }
-    return{nzdAccounts:withBalances(nzdAccounts),inrAccounts:withBalances(inrAccounts),otherAccounts:withBalances(otherAccounts),nzdTotal,inrTotal,combined,unconverted,hasAny:eligible.length>0}
-  },[accounts,transactions])
+    // How much would need to move from one country to the other, in NZD
+    // terms, for both dashboards to hold equal value at today's rate.
+    let transferSuggestion:{fromNzToIndia:boolean;nzdAmount:number;inrAmount:number}|null=null
+    if(fx?.rate&&(nzdAccounts.length>0||inrAccounts.length>0)){
+      const diff=nzdTotal-(inrTotalNzd??0)
+      const nzdAmount=Math.abs(diff)/2
+      if(nzdAmount>=1)transferSuggestion={fromNzToIndia:diff>0,nzdAmount,inrAmount:nzdAmount*fx.rate}
+    }
+    return{nzdAccounts:withBalances(nzdAccounts),inrAccounts:withBalances(inrAccounts),otherAccounts:withBalances(otherAccounts),nzdTotal,inrTotal,inrTotalNzd,combined,unconverted,transferSuggestion,hasAny:eligible.length>0}
+  },[accounts,transactions,fx])
 
   async function saveTx(e:FormEvent){e.preventDefault();const amount=Number(draft.amount);if(!(amount>=0))return;setSaving(true);try{const body:any={kind:'transaction',type:draft.type,amount,currency:draft.currency.toUpperCase(),category:draft.category||'Other',merchant:draft.merchant,date:draft.date,notes:draft.notes,accountId:draft.accountId||undefined,source:draft.source,confidence:draft.source==='voice'?0.85:1,riskLevel:'low'};if(draft.currency==='NZD')body.baseAmountNzd=amount;else if(draft.baseAmountNzd)body.baseAmountNzd=Number(draft.baseAmountNzd);const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error('Could not save transaction');setDraft(emptyDraft());setFormOpen(false);await load()}catch(e){setVoiceMessage(e instanceof Error?e.message:'Could not save transaction')}finally{setSaving(false)}}
   async function addAccount(e:FormEvent){e.preventDefault();if(!accountName.trim())return;setSaving(true);try{const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'account',name:accountName.trim(),type:accountType,currency:accountCurrency.toUpperCase(),institution})});if(!r.ok)throw new Error('Could not add account');setAccountName('');setInstitution('');setAccountOpen(false);await load()}finally{setSaving(false)}}
@@ -106,7 +120,7 @@ function FinancePageInner(){
     }catch(err){setExtractError(err instanceof Error?err.message:'Could not save this statement')}
     finally{setSavingStatement(false)}
   }
-  async function removeStatement(id:string){if(!confirm('Remove this statement from your finance history?'))return;const r=await fetch(`/api/finance/statements/${id}`,{method:'DELETE'});if(r.ok)await loadStatements()}
+  async function removeStatement(s:Statement){if(!confirm('Remove this statement from your finance history?'))return;const r=await fetch(`/api/finance/statements/${s.id}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({reminderId:s.reminderId||undefined})});if(r.ok)await loadStatements()}
 
   return <main className={styles.shell}>
     <header className={styles.header}><Link href='/'><ArrowLeft/>Ravi OS</Link><div><p>FINANCE CONTROL CENTRE</p><h1>Know where the money is going.</h1><span>Records, controls, calculations and governed financial intelligence.</span></div><span className={styles.private}><ShieldCheck/>Ravi only</span></header>
@@ -155,6 +169,7 @@ function FinancePageInner(){
             {preview.promoBalances.some(p=>p.rateApplicableUntil)&&<span className={`${styles.flag} ${styles.flagWarn}`}><CalendarClock/>Promo expires {preview.promoBalances.find(p=>p.rateApplicableUntil)?.rateApplicableUntil}</span>}
           </div>
           {preview.recommendedPaymentNote&&<div className={styles.statementNote}><b>{moneyOrDash(preview.recommendedPayment,preview.currency)} recommended payment.</b> {preview.recommendedPaymentNote}</div>}
+          {preview.paymentDueDate&&<div className={styles.statementNote} style={{marginTop:8}}><BellRing size={12} style={{verticalAlign:'-2px',marginRight:4}}/>Saving this will add a reminder to your dashboard for {preview.paymentDueDate}.</div>}
         </>}
         <div className={styles.previewActions} style={{marginTop:12}}><button onClick={()=>setPreview(null)} disabled={savingStatement}>Discard</button><button className={styles.primary} onClick={saveStatement} disabled={savingStatement}>{savingStatement?'Saving…':'Save to history'}</button></div>
       </div>}
@@ -163,7 +178,8 @@ function FinancePageInner(){
         const expiry=s.promoBalances.find(p=>p.rateApplicableUntil)
         const expiryDays=expiry?daysUntil(expiry.rateApplicableUntil):null
         return <article className={styles.statement} key={s.id}>
-          <div className={styles.statementHead}><div><b>{s.institution||'Document'} {s.accountLabel&&`· ${s.accountLabel}`}</b><small>{s.documentType==='payslip'?'Payslip':s.documentType==='bank_statement'?'Bank statement':s.documentType==='credit_card_statement'?'Credit card statement':'Document'}{s.statementStart&&s.statementEnd?` · ${s.statementStart} to ${s.statementEnd}`:''}</small></div><button aria-label='Remove' onClick={()=>removeStatement(s.id)}><Trash2/></button></div>
+          <div className={styles.statementHead}><div><b>{s.institution||'Document'} {s.accountLabel&&`· ${s.accountLabel}`}</b><small>{s.documentType==='payslip'?'Payslip':s.documentType==='bank_statement'?'Bank statement':s.documentType==='credit_card_statement'?'Credit card statement':'Document'}{s.statementStart&&s.statementEnd?` · ${s.statementStart} to ${s.statementEnd}`:''}</small></div><button aria-label='Remove' onClick={()=>removeStatement(s)}><Trash2/></button></div>
+          {s.reminderId&&s.paymentDueDate&&<div className={`${styles.flag} ${styles.flagGood}`} style={{marginBottom:8}}><BellRing/>Reminder added for {s.paymentDueDate}</div>}
           <div className={styles.statementFigs}>
             <div><small>CLOSING BALANCE</small><b>{moneyOrDash(s.closingBalance,s.currency)}</b></div>
             <div><small>MINIMUM DUE</small><b>{moneyOrDash(s.minimumDue,s.currency)}{s.paymentDueDate?` · ${s.paymentDueDate}`:''}</b></div>
@@ -180,11 +196,23 @@ function FinancePageInner(){
     </section>}
 
     {tab==='networth'&&<div>
+      <section className={styles.card} style={{marginBottom:12}}>
+        <div className={styles.cardHead}><div><p>LIVE RATE</p><h2>New Zealand ⇄ India</h2></div><button onClick={loadFx} disabled={fxLoading}><RefreshCw/>{fxLoading?'Fetching…':'Refresh'}</button></div>
+        {fxError&&<div className={styles.error}>{fxError}</div>}
+        {fx&&<>
+          <p style={{fontSize:10,color:'#59685f',margin:'0 0 12px'}}>1 NZD = {fx.rate.toFixed(4)} INR · fetched just now from {fx.source}{fx.asOf?` (rate date ${fx.asOf})`:''}</p>
+          <div className={styles.row2}>
+            <label>NZD<input type='number' step='0.01' value={convertNzd} onChange={e=>setConvertNzd(e.target.value)}/></label>
+            <label>≈ INR<input value={Number(convertNzd)>=0?money((Number(convertNzd)||0)*fx.rate,'INR'):'—'} readOnly/></label>
+          </div>
+          {netWorth.transferSuggestion&&<div className={styles.statementNote} style={{marginTop:10}}><ArrowLeftRight size={12} style={{verticalAlign:'-2px',marginRight:4}}/>To balance both dashboards to the same value at today's rate, move about {money(netWorth.transferSuggestion.nzdAmount,'NZD')} (≈{money(netWorth.transferSuggestion.inrAmount,'INR')}) from {netWorth.transferSuggestion.fromNzToIndia?'New Zealand to India':'India to New Zealand'}.</div>}
+        </>}
+      </section>
       {!netWorth.hasAny?<section className={styles.card}><div className={styles.empty}><Globe2/><b>No accounts included in net worth yet</b><span>Add your New Zealand accounts (currency NZD) and India accounts (currency INR) on the Accounts tab — they'll automatically split into separate dashboards here, plus a combined total.</span></div></section>:
       <div className={styles.netgrid}>
         <div className={styles.netcard}><h3><Globe2/>New Zealand</h3><p>Accounts in NZD</p><b>{money(netWorth.nzdTotal,'NZD')}</b>{netWorth.nzdAccounts.length===0?<div className={styles.empty} style={{minHeight:60}}><span>No NZD accounts yet</span></div>:netWorth.nzdAccounts.map(({account,balance})=><div className={styles.netAccount} key={account.id}><span><b>{account.name}</b><small>{account.institution||account.type}</small></span><span>{money(balance,'NZD')}</span></div>)}</div>
-        <div className={styles.netcard}><h3><IndianRupee/>India</h3><p>Accounts in INR</p><b>{money(netWorth.inrTotal,'INR')}</b>{netWorth.inrAccounts.length===0?<div className={styles.empty} style={{minHeight:60}}><span>No INR accounts yet</span></div>:netWorth.inrAccounts.map(({account,balance})=><div className={styles.netAccount} key={account.id}><span><b>{account.name}</b><small>{account.institution||account.type}</small></span><span>{money(balance,'INR')}</span></div>)}</div>
-        <div className={styles.netcard}><h3><Coins/>Combined net worth</h3><p>Everything converted to NZD</p><b>{money(netWorth.combined,'NZD')}</b>{netWorth.unconverted>0&&<div className={styles.statementNote}>{netWorth.unconverted} account{netWorth.unconverted>1?'s':''} not counted yet — record at least one transaction with an NZD conversion rate on it so Ravi OS knows how to convert that currency.</div>}{netWorth.otherAccounts.map(({account,balance})=><div className={styles.netAccount} key={account.id}><span><b>{account.name}</b><small>{account.currency} · {account.institution||account.type}</small></span><span>{money(balance,account.currency)}</span></div>)}</div>
+        <div className={styles.netcard}><h3><IndianRupee/>India</h3><p>Accounts in INR{netWorth.inrTotalNzd!=null&&` · ≈${money(netWorth.inrTotalNzd,'NZD')}`}</p><b>{money(netWorth.inrTotal,'INR')}</b>{netWorth.inrAccounts.length===0?<div className={styles.empty} style={{minHeight:60}}><span>No INR accounts yet</span></div>:netWorth.inrAccounts.map(({account,balance})=><div className={styles.netAccount} key={account.id}><span><b>{account.name}</b><small>{account.institution||account.type}</small></span><span>{money(balance,'INR')}</span></div>)}</div>
+        <div className={styles.netcard}><h3><Coins/>Combined net worth</h3><p>Everything converted to NZD at today's rate</p><b>{money(netWorth.combined,'NZD')}</b>{netWorth.unconverted>0&&<div className={styles.statementNote}>{netWorth.unconverted} account{netWorth.unconverted>1?'s':''} not counted yet — {fx?'':'fetch a live rate above, or '}record at least one transaction with an NZD conversion rate on it so Ravi OS knows how to convert that currency.</div>}{netWorth.otherAccounts.map(({account,balance})=><div className={styles.netAccount} key={account.id}><span><b>{account.name}</b><small>{account.currency} · {account.institution||account.type}</small></span><span>{money(balance,account.currency)}</span></div>)}</div>
       </div>}
     </div>}
   </main>

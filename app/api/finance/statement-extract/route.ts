@@ -11,6 +11,13 @@ import { PDFParse } from 'pdf-parse'
 import { reminderActor, isFinanceSession } from '../../../../lib/server/ravi-os-auth'
 import { aiEngineAvailable, aiJson } from '../../../../lib/server/ai-client'
 
+// A vision call on a dense screenshot (browser chrome, sidebar, a full
+// transaction table) can take longer than Vercel's default 10s serverless
+// timeout — the function gets killed mid-request and the client sees a
+// non-JSON response, which surfaces as the unhelpful generic "Could not
+// read that document" rather than a real error. Ask for the platform max.
+export const maxDuration = 60
+
 const DOC_TYPES = ['credit_card_statement', 'bank_statement', 'payslip', 'other']
 
 function nzToday() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Pacific/Auckland', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) }
@@ -70,24 +77,24 @@ export async function POST(request: Request) {
     const isImage = /^data:image\//.test(fileDataUrl)
     if (!isPdf && !isImage) return NextResponse.json({ error: 'Upload a PDF or an image (JPG/PNG) of the statement or payslip' }, { status: 400 })
 
-    const system = `You read financial documents for a personal finance tracker: credit card statements, bank statements or payslips. Return ONLY valid JSON with exactly these keys: documentType, institution, accountLabel, currency, statementStart, statementEnd, closingBalance, minimumDue, paymentDueDate, creditLimit, openingBalance, promoBalances, interestCharged, standardPurchaseRate, standardCashAdvanceRate, payslip, transactions, confidence.
+    const system = `You read financial documents for a personal finance tracker: credit card statements, bank statements or payslips. The document may be a formal downloadable statement (PDF) OR a screenshot of a live web/mobile banking "Accounts" or "Transactions" page — treat both as readable; a live account-and-transactions screenshot with no formal period printed on it is still a "bank_statement", not "other". Return ONLY valid JSON with exactly these keys: documentType, institution, accountLabel, currency, statementStart, statementEnd, closingBalance, minimumDue, paymentDueDate, creditLimit, openingBalance, promoBalances, interestCharged, standardPurchaseRate, standardCashAdvanceRate, payslip, transactions, confidence.
 Rules:
-- documentType: one of "credit_card_statement","bank_statement","payslip","other" — pick the best match.
-- institution: the bank/employer name (e.g. "ASB", "ANZ", "ICICI Bank").
+- documentType: one of "credit_card_statement","bank_statement","payslip","other" — pick the best match. A bank/savings account screen (with or without an overdraft facility) is "bank_statement" even if it's a live "Recent Transactions" view rather than a dated statement.
+- institution: the bank/employer name (e.g. "ASB", "ANZ", "ICICI Bank", "HDFC Bank").
 - accountLabel: a short label identifying the account/card, e.g. "ASB Visa Light •••• 0946" (mask all but the last 4 digits of any card/account number — never return a full number).
-- currency: 3-letter ISO currency code shown on the document.
-- statementStart / statementEnd: the statement period as YYYY-MM-DD, empty string if not a statement.
-- closingBalance: the closing/current balance owed on this statement, or null.
-- minimumDue: the minimum payment due, or null.
+- currency: 3-letter ISO currency code shown on the document (infer from symbol/institution if not spelled out, e.g. ₹ → "INR").
+- statementStart / statementEnd: the statement period as YYYY-MM-DD. If there is no formal printed period (e.g. a live "Recent Transactions" list), use the EARLIEST and LATEST transaction dates actually visible in the list as statementStart/statementEnd instead of leaving them empty — the account still needs a date to anchor its balance to. Only use empty string if you cannot find any date at all.
+- closingBalance: the account's real current balance — the actual amount held (bank account) or owed (credit card), as a signed number. Some bank/overdraft accounts show SEVERAL balance figures at once (e.g. "Account Balance", "Available Balance", "Total Overdraft" / credit limit remaining) — always use the one labelled "Account Balance", "Current Balance" or "Ledger Balance" (the real, reconciled figure), NEVER "Available Balance" (which nets off an overdraft/credit limit and is not the real balance) and never a limit figure. If the account is overdrawn / in debit, this must be a NEGATIVE number — do not report it as positive or take its absolute value.
+- minimumDue: the minimum payment due (credit cards only), or null.
 - paymentDueDate: YYYY-MM-DD the payment is due, or empty string.
-- creditLimit: the credit limit, or null.
-- openingBalance: the balance carried in at the start of the period, or null.
+- creditLimit: the credit limit (credit cards) or the total overdraft limit (an overdraft-linked bank account), or null.
+- openingBalance: the balance carried in at the start of the period, or null. Leave null for a live transactions view with no stated opening balance — do not derive or guess it.
 - promoBalances: an array of any promotional / 0% / interest-free / "Smart Rate" / installment-plan purchase balances shown SEPARATELY from the main balance (these still count inside the closing balance, but the statement calls them out on their own line with their own rate and expiry). Each entry: {label, startDate, rate, rateApplicableUntil, purchaseAmount, amountOwing}, all as strings except purchaseAmount/amountOwing which are numbers. Return an empty array if there is no such section — do not invent one.
 - interestCharged: a REAL interest charge that appears as an actual transaction/line-item on THIS statement's transaction list (e.g. "Interest Charged $12.40"). This is completely different from the advertised standard interest rate shown in the terms section — do NOT report a rate (like "13.50% p.a.") here, and do NOT estimate or calculate what interest "would" be. If there is no actual interest-charged line in the transaction list, return null.
 - standardPurchaseRate / standardCashAdvanceRate: the advertised annual percentage rates for reference (numbers like 13.5, 22.95), or null. These are disclosures, not charges.
 - payslip: if documentType is "payslip", {employer,payDate,grossPay,netPay} (payDate as YYYY-MM-DD, amounts as numbers), otherwise null.
-- transactions: for a credit_card_statement or bank_statement ONLY (empty array for payslip/other), every individual line item you can see in the transaction list — every purchase, payment, deposit, withdrawal, fee. Each entry: {date (YYYY-MM-DD, use the statement's year if only day/month is printed), description (merchant or narration, short), amount (a positive number), direction ("debit" for money leaving the account — a purchase, a withdrawal, a fee — or "credit" for money coming in — a payment received, a deposit, a refund), category (your best short guess: "Groceries","Dining","Fuel","Transport","Shopping","Subscriptions","Utilities","Rent","Salary","Transfer","Card Payment","Fees","Interest","Other")}. List every line item you can find, in the order they appear, up to 60. Do not summarize or merge line items into totals — one entry per transaction line. Never invent a transaction that is not printed.
-- confidence: 0 to 1 for the overall extraction.
+- transactions: for a credit_card_statement or bank_statement ONLY (empty array for payslip/other), every individual line item you can see in the transaction list — every purchase, payment, deposit, withdrawal, fee. Each entry: {date (YYYY-MM-DD, use the statement's year if only day/month is printed), description (merchant or narration, short), amount (a positive number), direction ("debit" for money leaving the account — a purchase, a withdrawal, a fee — or "credit" for money coming in — a payment received, a deposit, a refund), category (your best short guess: "Groceries","Dining","Fuel","Transport","Shopping","Subscriptions","Utilities","Rent","Salary","Transfer","Card Payment","Fees","Interest","Other")}. If a row has no explicit "debit"/"credit" label, infer direction from any arrow/icon/colour: an outward or up-right arrow, or a red/minus figure, means money left the account (debit); an inward or down-left arrow, or a green/plus figure, means money came in (credit). List every line item you can find, in the order they appear, up to 60. If a page says "Showing X of Y transactions" and only X are visible, extract just those X — never invent the rest. Do not summarize or merge line items into totals — one entry per transaction line. Never invent a transaction that is not printed.
+- confidence: 0 to 1 for the overall extraction. A clear, fully legible screenshot deserves a normal confidence score even if it's a live-transactions view rather than a formal statement — don't mark it down just for being a screenshot.
 - Never invent a field you cannot actually see on the document. Use null / empty string / empty array instead.`
 
     let aiResult

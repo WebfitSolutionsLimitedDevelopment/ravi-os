@@ -5,6 +5,11 @@ import { aiEngineAvailable, aiJson } from '../../../../lib/server/ai-client'
 import { fetchNzdInrRate } from '../../../../lib/server/fx-rate'
 import { accountBalance, computeNetWorth, isDebtAccount, type CalcAccount } from '../../../../lib/finance-calc'
 
+// Same reasoning as statement-extract: a full-picture AI review takes a real
+// AI call plus several data fetches — give it room to finish inside Vercel's
+// function instead of being killed and surfacing an opaque failure.
+export const maxDuration = 60
+
 function monthKey(d: string) { return d.slice(0, 7) }
 function nzToday() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Pacific/Auckland', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) }
 function monthsAgoKey(n: number) { const d = new Date(); d.setUTCMonth(d.getUTCMonth() - n); return new Intl.DateTimeFormat('en-CA', { timeZone: 'Pacific/Auckland', year: 'numeric', month: '2-digit' }).format(d) }

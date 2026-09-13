@@ -27,12 +27,20 @@ export interface AIJsonResult<T = any> {
 }
 
 function cleanJson(text: string) {
-  return text
+  const stripped = text
     .trim()
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/```$/, '')
     .trim()
+  // The model is told to "return ONLY JSON", but if it ever adds a stray
+  // sentence before/after the object anyway, pull out the outermost {...}
+  // block rather than failing the whole extraction over one wayward line.
+  if (stripped.startsWith('{') && stripped.endsWith('}')) return stripped
+  const start = stripped.indexOf('{')
+  const end = stripped.lastIndexOf('}')
+  if (start !== -1 && end > start) return stripped.slice(start, end + 1)
+  return stripped
 }
 
 function parseImageDataUrl(imageDataUrl: string) {
@@ -62,6 +70,10 @@ async function callAnthropic(opts: AIJsonOptions): Promise<string> {
       system: opts.system,
       messages: [{ role: 'user', content }],
     }),
+    // Vision calls on a busy screenshot can run long; fail with a clear,
+    // catchable error well before Vercel's own function timeout kills the
+    // request and hands the client an opaque non-JSON response.
+    signal: AbortSignal.timeout(50000),
   })
   if (!res.ok) throw new Error(`Anthropic error (${res.status}): ${await res.text()}`)
   const data = await res.json()
@@ -87,6 +99,7 @@ async function callOpenAI(opts: AIJsonOptions): Promise<string> {
       ],
       max_output_tokens: opts.maxTokens || 1200,
     }),
+    signal: AbortSignal.timeout(50000),
   })
   if (!res.ok) throw new Error(`OpenAI error (${res.status}): ${await res.text()}`)
   const data = await res.json()

@@ -37,7 +37,14 @@ export default function ReminderCentre(){
   const load=async()=>{const local=readLocal();const cached=readReminderCache<Reminder>();const instant=mergeReminders(cached,local);if(instant.length){setReminders(instant);setLoading(false)}else if(local.length){setReminders(local);setLoading(false)}try{const r=await fetch('/api/reminders');if(r.ok){const d=await r.json();const server=d.reminders||[];writeReminderCache(server);setReminders(mergeReminders(server,local));setSyncMessage('')}else if(instant.length){setSyncMessage('Showing the latest saved reminder snapshot while shared sync reconnects.')}}catch{if(instant.length)setSyncMessage('Showing the latest saved reminder snapshot while shared sync reconnects.')}finally{setLoading(false)}}
   const migrateLocal=async()=>{const local=readLocal();if(!local.length)return;let allSaved=true;for(const old of local){try{const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:old.title,notes:old.notes||'',date:old.date,time:old.time,dueAt:dueAt(old.date,old.time),source:old.source,imageName:old.imageName,imageDataUrl:old.posterUrl,legacyClientId:old.legacyClientId})});if(!r.ok)allSaved=false}catch{allSaved=false}}if(allSaved)localStorage.setItem('ravi-os-reminders-migrated','1')}
   useEffect(()=>{if('Notification'in window)setNotificationStatus(Notification.permission==='granted'?'Enabled on this device':'Not enabled');const cached=readReminderCache<Reminder>();const local=readLocal();const instant=mergeReminders(cached,local);if(instant.length){setReminders(instant);setLoading(false)};(async()=>{await migrateLocal();await load()})()},[])
-  const sorted=useMemo(()=>[...reminders].sort((a,b)=>stamp(a)-stamp(b)),[reminders]);const upcoming=useMemo(()=>sorted.filter(r=>stamp(r)>=Date.now()),[sorted])
+  // Nearest-first sorting alone pushes every OVERDUE reminder to the very
+  // top (an old, missed event has the smallest timestamp of all), so the
+  // list opened on a wall of red "Overdue" cards before anything current or
+  // upcoming was visible. Keep today/upcoming exactly as before — soonest
+  // first — but demote anything already past its time to the end of the
+  // list, most-recently-missed first, so it's still there to deal with but
+  // never buries what's actually coming up.
+  const sorted=useMemo(()=>{const now=Date.now();const future=reminders.filter(r=>stamp(r)>=now).sort((a,b)=>stamp(a)-stamp(b));const past=reminders.filter(r=>stamp(r)<now).sort((a,b)=>stamp(b)-stamp(a));return [...future,...past]},[reminders]);const upcoming=useMemo(()=>sorted.filter(r=>stamp(r)>=Date.now()),[sorted])
   const reset=()=>{setEditing(null);setTitle('');setDate('');setTime('');setVenue('');setImageName('');setImageData('');setMessage('')}
   const openAdd=()=>{reset();setFormOpen(true)}
   const edit=(r:Reminder)=>{setEditing(r.id);setTitle(r.title);setDate(r.date);setTime(r.time);setVenue(r.notes||'');setImageName(r.imageName||'');setImageData(r.posterUrl||'');setFormOpen(true);window.scrollTo({top:0,behavior:'smooth'})}

@@ -62,6 +62,13 @@ function FinancePageInner(){
   // can see what's coming before the money is already gone.
   const upcoming=useMemo(()=>detectUpcomingCharges(transactions,{todayStr:today()}),[transactions])
   const upcomingByCcy=useMemo(()=>upcomingTotals(upcoming),[upcoming])
+  // Ravi's own words: NZD and INR expenditure sitting in one mixed list
+  // ("$744 and ₹2,000 next to each other") is confusing to plan against —
+  // he thinks of these as two separate money-lives, India and New Zealand.
+  // Split the same underlying projection into one section per currency
+  // instead of building a second detector; NZD is listed first since that's
+  // his home currency, INR next, anything else (if it ever shows up) after.
+  const upcomingGroups=useMemo(()=>{const byCcy=new Map<string,typeof upcoming>();for(const c of upcoming){const arr=byCcy.get(c.currency);if(arr)arr.push(c);else byCcy.set(c.currency,[c])}const label=(ccy:string)=>ccy==='INR'?'India':ccy==='NZD'?'New Zealand':ccy;const order=['NZD','INR'];return [...byCcy.entries()].sort((a,b)=>{const ia=order.indexOf(a[0]);const ib=order.indexOf(b[0]);return (ia<0?99:ia)-(ib<0?99:ib)}).map(([ccy,list])=>({ccy,label:label(ccy),list}))},[upcoming])
 
   async function saveTx(e:FormEvent){e.preventDefault();const amount=Number(draft.amount);if(!(amount>=0))return;setSaving(true);try{const body:any={kind:'transaction',type:draft.type,amount,currency:draft.currency.toUpperCase(),category:draft.category||'Other',merchant:draft.merchant,date:draft.date,notes:draft.notes,accountId:draft.accountId||undefined,source:draft.source,confidence:draft.source==='voice'?0.85:1,riskLevel:'low'};if(draft.currency==='NZD')body.baseAmountNzd=amount;else if(draft.baseAmountNzd)body.baseAmountNzd=Number(draft.baseAmountNzd);const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error('Could not save transaction');setDraft(emptyDraft());setFormOpen(false);await load()}catch(e){setVoiceMessage(e instanceof Error?e.message:'Could not save transaction')}finally{setSaving(false)}}
   async function addAccount(e:FormEvent){e.preventDefault();if(!accountName.trim())return;setSaving(true);try{const r=await fetch('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'account',name:accountName.trim(),type:accountType,currency:accountCurrency.toUpperCase(),institution})});if(!r.ok)throw new Error('Could not add account');setAccountName('');setInstitution('');setAccountOpen(false);await load()}finally{setSaving(false)}}
@@ -116,11 +123,16 @@ function FinancePageInner(){
     <nav className={styles.tabs}><button className={tab==='overview'?styles.active:''} onClick={()=>setTab('overview')}>Overview</button><button className={tab==='ledger'?styles.active:''} onClick={()=>setTab('ledger')}>Ledger</button><button className={tab==='accounts'?styles.active:''} onClick={()=>setTab('accounts')}>Accounts</button><button className={tab==='statements'?styles.active:''} onClick={()=>setTab('statements')}>Statements</button><button className={tab==='networth'?styles.active:''} onClick={()=>setTab('networth')}>Net worth</button></nav>
 
     {error&&<div className={styles.error}>{error}</div>}
-    {tab==='overview'&&<section className={styles.card} style={{maxWidth:1100,margin:'0 auto 12px'}}>
-      <div className={styles.cardHead}><div><p>CASH FLOW FORECAST</p><h2>Upcoming expenditure</h2></div><CalendarClock/></div>
-      {upcoming.length===0?<div className={styles.empty}><CalendarClock/><b>Still learning your patterns</b><span>Once a bill has hit the same account at least twice on a regular beat — weekly, fortnightly, monthly, whatever it turns out to be — it'll show up here with its next expected date and amount, so nothing lands as a surprise.</span></div>:<>
-        <div className={styles.upcomingTotals}>{Object.entries(upcomingByCcy).map(([ccy,t])=><div key={ccy}><small>EXPECTED OUT · NEXT 45 DAYS</small><b>{money(t.expense,ccy)}</b>{t.income>0&&<span>+{money(t.income,ccy)} expected in over the same period</span>}</div>)}</div>
-        <div className={styles.upcomingList}>{upcoming.map(c=>{
+    {tab==='overview'&&(upcoming.length===0?
+      <section className={styles.card} style={{maxWidth:1100,margin:'0 auto 12px'}}>
+        <div className={styles.cardHead}><div><p>CASH FLOW FORECAST</p><h2>Upcoming expenditure</h2></div><CalendarClock/></div>
+        <div className={styles.empty}><CalendarClock/><b>Still learning your patterns</b><span>Once a bill has hit the same account at least twice on a regular beat — weekly, fortnightly, monthly, whatever it turns out to be — it'll show up here with its next expected date and amount, so nothing lands as a surprise.</span></div>
+      </section>
+      :upcomingGroups.map(g=>
+      <section key={g.ccy} className={styles.card} style={{maxWidth:1100,margin:'0 auto 12px'}}>
+        <div className={styles.cardHead}><div><p>CASH FLOW FORECAST · {g.label.toUpperCase()}</p><h2>Upcoming expenditure — {g.label}</h2></div><CalendarClock/></div>
+        <div className={styles.upcomingTotals}><div><small>EXPECTED OUT · NEXT 45 DAYS</small><b>{money((upcomingByCcy[g.ccy]||{expense:0,income:0}).expense,g.ccy)}</b>{(upcomingByCcy[g.ccy]?.income||0)>0&&<span>+{money(upcomingByCcy[g.ccy].income,g.ccy)} expected in over the same period</span>}</div></div>
+        <div className={styles.upcomingList}>{g.list.map(c=>{
           const acct=accounts.find(a=>a.id===c.accountId)
           const dueLabel=c.daysUntil<0?`${Math.abs(c.daysUntil)}d overdue`:c.daysUntil===0?'due today':`in ${c.daysUntil}d`
           return <article className={styles.upcomingRow} key={c.key}>
@@ -132,8 +144,8 @@ function FinancePageInner(){
             </span>
           </article>
         })}</div>
-      </>}
-    </section>}
+      </section>
+      ))}
     {tab==='overview'&&<div className={styles.grid}>
       <section className={styles.card}><div className={styles.cardHead}><div><p>CONTROLLER</p><h2>Intelligent review</h2></div><button onClick={review} disabled={reviewing}><BrainCircuit/>{reviewing?'Reviewing…':'Review finances'}</button></div>{!advice?<div className={styles.empty}><BrainCircuit/><b>Run a finance review</b><span>Ravi OS will analyse bookkeeping quality, cash flow, controls and next actions from your actual ledger.</span></div>:<div className={styles.advice}><div className={`${styles.health} ${styles[advice.health]}`}>{advice.health.toUpperCase()}</div><h3>{advice.headline}</h3>{advice.observations?.map((x,i)=><p key={i}>{x}</p>)}<h4>Recommended actions</h4>{advice.actions?.map((x,i)=><div className={styles.action} key={i}><b>{x.title}</b><span>{x.why}</span><em>{x.priority}</em></div>)}</div>}</section>
       <section className={styles.card}><div className={styles.cardHead}><div><p>SPENDING</p><h2>Top categories this month</h2></div><WalletCards/></div>{categories.length===0?<div className={styles.empty}><WalletCards/><b>No spending recorded</b><span>Add transactions manually or by voice.</span></div>:<div className={styles.categories}>{categories.map(([name,value])=><div key={name}><span><b>{name}</b><small>{money(value)}</small></span><i style={{width:`${Math.max(6,(value/(categories[0]?.[1]||1))*100)}%`}}/></div>)}</div>}</section>

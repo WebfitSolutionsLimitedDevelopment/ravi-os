@@ -1,0 +1,5 @@
+project_id = "pvnfwippvojplzedbnba"
+
+# Auth is handled in-function via the x-family-session header (PIN login).
+[functions.ravi-os-reminders]
+verify_jwt = false

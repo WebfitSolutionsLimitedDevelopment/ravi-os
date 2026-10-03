@@ -1,65 +1,452 @@
-'use client'
+'use client';
+import { useState, useEffect } from 'react';
+import css from './reminders.module.css';
 
-import Link from 'next/link'
-import { ChangeEvent, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, BellRing, CalendarPlus, Camera, ChevronRight, Edit3, FileImage, Image as ImageIcon, Plus, Repeat2, Save, Trash2, X } from 'lucide-react'
-import { extractPosterFields } from '../../lib/poster-extract-client'
-import { readReminderCache, writeReminderCache } from '../../lib/reminder-client-cache'
-import { REPEAT_OPTIONS, Repeat, repeatLabel, repeatRRule } from '../../lib/reminder-repeat'
-import styles from './reminders.module.css'
+interface Reminder {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  notes: string;
+  source: string;
+  isRecurring?: boolean;
+}
 
-type Reminder={id:string;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;posterUrl?:string;createdBy?:string;legacyClientId?:string;notified?:boolean;repeat?:Repeat;repeatUntil?:string}
-type LegacyReminder={id:number;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;imageDataUrl?:string;notified?:boolean;repeat?:Repeat;repeatUntil?:string}
-const storageKey='ravi-os-reminders-v2'
-// Reminder times are usually "HH:MM" but some (bulk-imported/shared ones)
-// come through as "HH:MM:SS" — naively appending ":00" to those produces
-// an invalid date, which broke sorting and showed "NaNd left" countdowns.
-function normTime(t:string){const m=String(t||'').match(/^(\d{1,2}):(\d{2})/);return m?`${m[1].padStart(2,'0')}:${m[2]}`:'23:59'}
-function stamp(r:Reminder){return new Date(`${r.date}T${normTime(r.time)}:00`).getTime()}
-function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)return'today';if(h<=48)return'tomorrow';if(h<=72)return'soon';return'later'}
-function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue';const m=Math.max(1,Math.round(d/60000));if(m<60)return`${m}m left`;const h=Math.floor(m/60);if(h<24)return`${h}h ${m%60}m left`;const days=Math.floor(h/24);return`${days}d ${h%24}h left`}
-function dueAt(date:string,time:string){return new Date(`${date}T${normTime(time)}:00`).toISOString()}
-// A poster thumbnail replaces the date box in the list row, and the
-// countdown pill only ever says "1d 2h left" — neither tells you the actual
-// date and time without opening the reminder. This gives every row a
-// plain-language "Sat 12 Sep · 5:00pm" line so that's visible at a glance.
-function fmtTime12(t:string){const[h,m]=normTime(t).split(':').map(Number);const period=h>=12?'pm':'am';const h12=h%12||12;return `${h12}:${String(m).padStart(2,'0')}${period}`}
-function whenLabel(r:Reminder){const d=new Date(`${r.date}T12:00:00`).toLocaleDateString('en-NZ',{weekday:'short',day:'numeric',month:'short'});return `${d} · ${fmtTime12(r.time)}`}
-function calendarUrl(r:Reminder){const start=new Date(`${r.date}T${normTime(r.time)}:00`);const end=new Date(start.getTime()+1800000);const fmt=(d:Date)=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z');const p=new URLSearchParams({action:'TEMPLATE',text:r.title,dates:`${fmt(start)}/${fmt(end)}`,details:r.notes||'Created from Ravi OS',ctz:'Pacific/Auckland'});const rr=repeatRRule(r.repeat,r.repeatUntil);if(rr)p.set('recur',rr);return`https://calendar.google.com/calendar/render?${p.toString()}`}
-function readLocal():Reminder[]{try{const rows:LegacyReminder[]=JSON.parse(localStorage.getItem(storageKey)||'[]');return rows.map(r=>({id:`local-${r.id}`,title:r.title,notes:r.notes||'',date:r.date,time:r.time,source:r.source,imageName:r.imageName,posterUrl:r.imageDataUrl,createdBy:'ravi',legacyClientId:String(r.id),notified:r.notified,repeat:r.repeat,repeatUntil:r.repeatUntil}))}catch{return[]}}
-function writeLocal(rows:LegacyReminder[]):boolean{try{if(!rows.length){localStorage.removeItem(storageKey);return true}localStorage.setItem(storageKey,JSON.stringify(rows));return true}catch{try{localStorage.setItem(storageKey,JSON.stringify(rows.map(({imageDataUrl,...r})=>r)));return true}catch{return false}}}
-function readLegacyRows():LegacyReminder[]{try{const rows=JSON.parse(localStorage.getItem(storageKey)||'[]');return Array.isArray(rows)?rows:[]}catch{return[]}}
-function pruneLocal(serverLegacyIds:Set<string>){const rows=readLegacyRows();const kept=rows.filter(r=>!serverLegacyIds.has(String(r.id)));if(kept.length!==rows.length)writeLocal(kept)}
-function mergeReminders(server:Reminder[],local:Reminder[]){const serverLegacy=new Set(server.map(r=>r.legacyClientId).filter(Boolean));return [...server,...local.filter(r=>!r.legacyClientId||!serverLegacy.has(r.legacyClientId))].sort((a,b)=>stamp(a)-stamp(b))}
+export default function RemindersPage() {
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [todayReminders, setTodayReminders] = useState<Reminder[]>([]);
+  const [upcomingReminders, setUpcomingReminders] = useState<Reminder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [formOpen, setFormOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  const [date, setDate] = useState('');
+  const [time, setTime] = useState('');
+  const [venue, setVenue] = useState('');
+  const [working, setWorking] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
 
-export default function ReminderCentre(){
-  const[reminders,setReminders]=useState<Reminder[]>([]);const[loading,setLoading]=useState(true);const[formOpen,setFormOpen]=useState(false);const[editing,setEditing]=useState<string|null>(null)
-  const[title,setTitle]=useState('');const[date,setDate]=useState('');const[time,setTime]=useState('');const[venue,setVenue]=useState('');const[imageName,setImageName]=useState('');const[imageData,setImageData]=useState('');const[repeat,setRepeat]=useState<Repeat>('none');const[repeatUntil,setRepeatUntil]=useState('')
-  const[working,setWorking]=useState(false);const[message,setMessage]=useState('');const[notificationStatus,setNotificationStatus]=useState('Not enabled');const[syncMessage,setSyncMessage]=useState('')
+  useEffect(() => {
+    load();
+  }, []);
 
-  const load=async()=>{const local=readLocal();const cached=readReminderCache<Reminder>();const instant=mergeReminders(cached,local);if(instant.length){setReminders(instant);setLoading(false)}else if(local.length){setReminders(local);setLoading(false)}try{const r=await fetch('/api/reminders');if(r.ok){const d=await r.json();const server=d.reminders||[];writeReminderCache(server);pruneLocal(new Set(server.map((r:Reminder)=>r.legacyClientId).filter(Boolean) as string[]));setReminders(mergeReminders(server,readLocal()));setSyncMessage('')}else if(instant.length){setSyncMessage('Showing the latest saved reminder snapshot while shared sync reconnects.')}}catch{if(instant.length)setSyncMessage('Showing the latest saved reminder snapshot while shared sync reconnects.')}finally{setLoading(false)}}
-  const migrateLocal=async()=>{const local=readLocal();if(!local.length)return;let allSaved=true;for(const old of local){try{const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:old.title,notes:old.notes||'',date:old.date,time:old.time,dueAt:dueAt(old.date,old.time),source:old.source,imageName:old.imageName,imageDataUrl:old.posterUrl,legacyClientId:old.legacyClientId,repeat:old.repeat||'none',repeatUntil:old.repeatUntil})});if(!r.ok)allSaved=false}catch{allSaved=false}}if(allSaved)localStorage.setItem('ravi-os-reminders-migrated','1')}
-  useEffect(()=>{if('Notification'in window)setNotificationStatus(Notification.permission==='granted'?'Enabled on this device':'Not enabled');const cached=readReminderCache<Reminder>();const local=readLocal();const instant=mergeReminders(cached,local);if(instant.length){setReminders(instant);setLoading(false)};(async()=>{await migrateLocal();await load()})()},[])
-  // Nearest-first sorting alone pushes every OVERDUE reminder to the very
-  // top (an old, missed event has the smallest timestamp of all), so the
-  // list opened on a wall of red "Overdue" cards before anything current or
-  // upcoming was visible. Keep today/upcoming exactly as before — soonest
-  // first — but demote anything already past its time to the end of the
-  // list, most-recently-missed first, so it's still there to deal with but
-  // never buries what's actually coming up.
-  const sorted=useMemo(()=>{const now=Date.now();const future=reminders.filter(r=>stamp(r)>=now).sort((a,b)=>stamp(a)-stamp(b));const past=reminders.filter(r=>stamp(r)<now).sort((a,b)=>stamp(b)-stamp(a));return [...future,...past]},[reminders]);const upcoming=useMemo(()=>sorted.filter(r=>stamp(r)>=Date.now()),[sorted])
-  const reset=()=>{setEditing(null);setTitle('');setDate('');setTime('');setVenue('');setImageName('');setImageData('');setRepeat('none');setRepeatUntil('');setMessage('')}
-  const openAdd=()=>{reset();setFormOpen(true)}
-  const edit=(r:Reminder)=>{setEditing(r.id);setTitle(r.title);setDate(r.date);setTime(r.time);setVenue(r.notes||'');setImageName(r.imageName||'');setImageData(r.posterUrl||'');setRepeat(r.repeat||'none');setRepeatUntil(r.repeatUntil||'');setFormOpen(true);window.scrollTo({top:0,behavior:'smooth'})}
-  const requestNotifications=async()=>{if(!('Notification'in window)){setNotificationStatus('Use Calendar alerts on this browser');return}const p=await Notification.requestPermission();setNotificationStatus(p==='granted'?'Enabled on this device':'Not enabled')}
-  async function onPoster(e:ChangeEvent<HTMLInputElement>){const file=e.target.files?.[0];if(!file)return;setWorking(true);setMessage('Reading the event poster…');setImageName(file.name);setTitle('');setDate('');setTime('');setVenue('');try{const p=await extractPosterFields(file);setImageData(p.imageDataUrl);setTitle(p.title==='Event reminder'?'':p.title);setDate(p.date||'');setTime(p.time||'');setVenue([p.venue,p.address].filter(Boolean).join(', '));setMessage(p.title&&p.title!=='Event reminder'&&p.date&&p.time?'Poster read. Check once and save.':'I could not confidently read every field. Please fill only the missing field(s), then save.')}catch{setImageData('');setMessage('I could not read this poster reliably. Please enter the event title, date, time and venue.')}finally{setWorking(false)}}
-  async function save(){if(!title.trim()||!date||!time)return;setWorking(true);setMessage('Saving…');try{const isLocalEdit=Boolean(editing?.startsWith('local-'));let legacyId=editing?.startsWith('local-')?Number(editing.slice(6)):Date.now();let legacyRows=readLegacyRows();const localRow:LegacyReminder={id:legacyId,title:title.trim(),notes:venue.trim(),date,time,source:imageName?'image':'text',imageName:imageName||undefined,imageDataUrl:imageData||undefined,repeat,repeatUntil:repeat!=='none'&&repeatUntil?repeatUntil:undefined};if(isLocalEdit)legacyRows=legacyRows.map(r=>r.id===legacyId?localRow:r);else if(!editing)legacyRows=[localRow,...legacyRows];writeLocal(legacyRows);setReminders(prev=>mergeReminders(prev.filter(r=>r.id!==`local-${legacyId}`),readLocal()));const body={title:title.trim(),notes:venue.trim(),date,time,dueAt:dueAt(date,time),source:imageName?'image':'text',imageName:imageName||undefined,imageDataUrl:imageData||undefined,legacyClientId:String(legacyId),repeat,repeatUntil:repeat!=='none'?repeatUntil:''};try{const r=await fetch(editing&&!isLocalEdit?`/api/reminders/${editing}`:'/api/reminders',{method:editing&&!isLocalEdit?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.ok){writeLocal(readLegacyRows().filter(row=>row.id!==legacyId));await load();setSyncMessage('')}else setSyncMessage('Saved safely on this device. Shared sync is not connected yet.')}catch{setSyncMessage('Saved safely on this device. Shared sync is not connected yet.')}setFormOpen(false);reset()}catch{setMessage('Could not save this reminder. Please try again.')}finally{setWorking(false)}}
-  async function remove(id:string){if(!confirm('Delete this reminder?'))return;if(id.startsWith('local-')){const localId=Number(id.slice(6));let rows:LegacyReminder[]=[];try{rows=JSON.parse(localStorage.getItem(storageKey)||'[]')}catch{};writeLocal(rows.filter(r=>r.id!==localId));setReminders(prev=>prev.filter(r=>r.id!==id));return}const r=await fetch(`/api/reminders/${id}`,{method:'DELETE'});if(r.ok)await load()}
-  return <main className={styles.shell}>
-    <header className={styles.header}><Link href="/" className={styles.back}><ArrowLeft/> Ravi OS</Link><div className={styles.heading}><p>REMINDERS</p><h1>What’s coming up?</h1><span>One shared reminder list for Ravi and Geet. Nearest event always comes first.</span></div><button onClick={requestNotifications} className={styles.notify}><BellRing/><span><b>Phone alerts</b><small>{notificationStatus}</small></span></button></header>
-    {syncMessage&&<div className={styles.saved} style={{maxWidth:1180,margin:'0 auto 12px'}}>{syncMessage}</div>}
-    <section className={styles.captureGrid}><div className={styles.captureCard}><div className={styles.captureHead}><span><Plus/></span><div><p>ADD REMINDER</p><h2>Poster or quick entry</h2></div></div><div className={styles.captureActions}><label><ImageIcon/>Choose poster<input type="file" accept="image/*" onChange={e=>{openAdd();onPoster(e)}}/></label><label><Camera/>Use camera<input type="file" accept="image/*" capture="environment" onChange={e=>{openAdd();onPoster(e)}}/></label><button className={styles.analyse} onClick={openAdd}><Plus/>Type reminder</button></div><p style={{fontSize:11,color:'#748078',margin:'12px 0 0'}}>Poster extraction keeps only event title, date, time, venue and address.</p></div><div className={styles.confirmCard}><div className={styles.confirmHead}><div><p>NEXT</p><h2>{upcoming[0]?.title||'No upcoming reminder'}</h2></div><span>{upcoming[0]?countdown(upcoming[0]):'All clear'}</span></div>{upcoming[0]?<><div className={styles.two}><div><small>Date</small><b>{new Date(`${upcoming[0].date}T12:00:00`).toLocaleDateString('en-NZ',{day:'numeric',month:'long',year:'numeric'})}</b></div><div><small>Time</small><b>{upcoming[0].time}</b></div></div>{upcoming[0].notes&&<p style={{fontSize:11,color:'#52645b'}}>{upcoming[0].notes}</p>}<Link href={`/reminders/${upcoming[0].id}`} className={styles.create}>Open reminder</Link></>:<button className={styles.create} onClick={openAdd}><Plus/>Add first reminder</button>}</div></section>
-    {formOpen&&<section className={styles.confirmCard} style={{maxWidth:1180,margin:'14px auto'}}><div className={styles.confirmHead}><div><p>{editing?'EDIT':'NEW REMINDER'}</p><h2>{editing?'Update reminder':'Check and save'}</h2></div><button onClick={()=>{setFormOpen(false);reset()}} aria-label="Close"><X/></button></div>{imageData&&<div className={styles.previewWrap}><img src={imageData} alt="Selected poster"/><div><FileImage/><span><b>{imageName}</b><small>{message}</small></span></div></div>}{!imageData&&message&&<div className={styles.saved}>{message}</div>}<label>Event title<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Event title"/></label><div className={styles.two}><label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label>Time<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label></div><label>Venue & address<input value={venue} onChange={e=>setVenue(e.target.value)} placeholder="Venue name and address"/></label><div className={styles.two}><label>Repeat<select value={repeat} onChange={e=>setRepeat(e.target.value as Repeat)}>{REPEAT_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></label>{repeat!=='none'&&<label>Until (optional)<input type="date" value={repeatUntil} min={date||undefined} onChange={e=>setRepeatUntil(e.target.value)}/></label>}</div><button className={styles.create} disabled={working||!title.trim()||!date||!time} onClick={save}><Save/>{working?'Working…':editing?'Save changes':'Save reminder'}</button></section>}
-    <section className={styles.listCard}><div className={styles.listHead}><div><p>UPCOMING</p><h2>Your shared reminders</h2></div><span>{upcoming.length} upcoming</span></div>{loading?<div className={styles.empty}><BellRing/><b>Loading reminders…</b></div>:sorted.length===0?<div className={styles.empty}><BellRing/><b>No reminders yet</b><span>Add one from a poster or type it in.</span></div>:<div className={styles.list}>{sorted.map(r=><article key={r.id} className={styles[urgency(r)]}><Link href={r.id.startsWith('local-')?'/reminders':`/reminders/${r.id}`} className={styles.reminderLink}>{r.posterUrl?<img src={r.posterUrl} className={styles.thumb} alt="Reminder poster"/>:<div className={styles.dateBox}><b>{new Date(`${r.date}T12:00:00`).toLocaleDateString('en-NZ',{day:'2-digit',month:'short'})}</b><span>{r.time}</span></div>}<div className={styles.reminderText}><b>{r.title}</b>{r.posterUrl&&<em>{whenLabel(r)}</em>}<small>{r.notes||`Added by ${r.createdBy==='geet'?'Geet':'Ravi'}`}</small>{r.repeat&&r.repeat!=='none'&&<small><Repeat2 size={10} style={{verticalAlign:'-1px'}}/> {repeatLabel(r.repeat,r.repeatUntil)}</small>}<span>{countdown(r)}</span></div><ChevronRight className={styles.chevron}/></Link><div className={styles.rowActions}><a href={calendarUrl(r)} target="_blank" rel="noreferrer"><CalendarPlus/>Calendar</a><button onClick={()=>edit(r)} aria-label="Edit reminder"><Edit3/></button><button onClick={()=>remove(r.id)} aria-label="Delete reminder"><Trash2/></button></div></article>)}</div>}</section>
-  </main>
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const todayList = reminders.filter(r => r.date === today).sort((a, b) => a.time.localeCompare(b.time));
+    const upcomingList = reminders.filter(r => r.date > today).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    setTodayReminders(todayList);
+    setUpcomingReminders(upcomingList);
+  }, [reminders]);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await fetch('/api/reminders');
+      if (r.ok) {
+        const data = await r.json();
+        setReminders(data.reminders || []);
+      }
+    } catch (e) {
+      console.error('Failed to load reminders:', e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function save() {
+    if (!title.trim() || !date || !time) return;
+    setWorking(true);
+    try {
+      const body = {
+        title: title.trim(),
+        notes: venue.trim(),
+        date,
+        time,
+        dueAt: `${date}T${time}:00Z`,
+        source: 'text',
+      };
+      const r = await fetch(editing ? `/api/reminders/${editing}` : '/api/reminders', {
+        method: editing ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        await load();
+        reset();
+        setFormOpen(false);
+      }
+    } catch (e) {
+      console.error('Save failed:', e);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function deleteReminder(id: string) {
+    if (!confirm('Delete this reminder?')) return;
+    try {
+      const r = await fetch(`/api/reminders/${id}`, { method: 'DELETE' });
+      if (r.ok) await load();
+    } catch (e) {
+      console.error('Delete failed:', e);
+    }
+  }
+
+  function reset() {
+    setTitle('');
+    setDate('');
+    setTime('');
+    setVenue('');
+    setEditing(null);
+  }
+
+  const timeUntil = (date: string, time: string) => {
+    const target = new Date(`${date}T${time}:00`);
+    const now = new Date();
+    const diff = target.getTime() - now.getTime();
+    if (diff < 0) return 'past';
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h`;
+    return 'soon';
+  };
+
+  const formatTime = (time: string) => {
+    const [h, m] = time.split(':');
+    const hour = parseInt(h);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const displayHour = hour % 12 || 12;
+    return `${displayHour}:${m} ${ampm}`;
+  };
+
+  const formatDate = (date: string) => {
+    const d = new Date(date + 'T00:00:00');
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    if (date === today.toISOString().slice(0, 10)) return 'Today';
+    if (date === tomorrow.toISOString().slice(0, 10)) return 'Tomorrow';
+    
+    return d.toLocaleDateString('en-NZ', { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+
+  return (
+    <div className={css.page}>
+      <style>{`
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #fafaf9; }
+        
+        @keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        
+        .reminder-item {
+          animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        
+        .reminder-item:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+        }
+        
+        .reminder-item:active {
+          transform: translateY(0);
+        }
+        
+        button {
+          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+          cursor: pointer;
+          border: none;
+          font-weight: 500;
+          font-size: 14px;
+        }
+        
+        button:hover:not(:disabled) {
+          transform: scale(1.02);
+        }
+        
+        button:active:not(:disabled) {
+          transform: scale(0.98);
+        }
+        
+        button:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+        
+        input, select {
+          transition: all 0.2s ease;
+          border: 1px solid #e5e5e5;
+          padding: 10px 12px;
+          border-radius: 8px;
+          font-size: 14px;
+          font-family: inherit;
+        }
+        
+        input:focus, select:focus {
+          outline: none;
+          border-color: #173d2f;
+          box-shadow: 0 0 0 3px rgba(23, 61, 47, 0.1);
+        }
+        
+        .form-overlay {
+          animation: fadeIn 0.2s ease-in;
+        }
+      `}</style>
+
+      {/* Header */}
+      <div className={css.header} style={{ animation: 'fadeIn 0.3s ease' }}>
+        <h1>Reminders</h1>
+        <button
+          onClick={() => setFormOpen(true)}
+          style={{
+            background: '#173d2f',
+            color: 'white',
+            padding: '10px 16px',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: 600,
+          }}
+        >
+          + Add
+        </button>
+      </div>
+
+      {/* Loading */}
+      {loading && (
+        <div style={{ padding: '24px', textAlign: 'center', animation: 'pulse 1.5s ease-in-out infinite' }}>
+          Loading reminders...
+        </div>
+      )}
+
+      {!loading && (
+        <>
+          {/* Today Section */}
+          {todayReminders.length > 0 && (
+            <section style={{ padding: '0 16px 24px' }}>
+              <div style={{
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#999',
+                marginBottom: '12px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+              }}>
+                TODAY
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {todayReminders.map((r, i) => (
+                  <div
+                    key={r.id}
+                    className="reminder-item"
+                    style={{
+                      background: 'white',
+                      padding: '16px',
+                      borderRadius: '12px',
+                      borderLeft: '4px solid #E8A87C',
+                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                      animationDelay: `${i * 0.05}s`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '16px', fontWeight: 600, color: '#173d2f', marginBottom: '4px' }}>
+                          {r.title}
+                        </div>
+                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '8px' }}>
+                          {formatTime(r.time)}
+                          {r.notes && ` • ${r.notes}`}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#E8A87C', fontWeight: 500 }}>
+                          {timeUntil(r.date, r.time)} remaining
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => deleteReminder(r.id)}
+                        style={{
+                          background: 'none',
+                          color: '#ccc',
+                          padding: '4px',
+                          fontSize: '16px',
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Upcoming Section */}
+          {upcomingReminders.length > 0 && (
+            <section style={{ padding: '0 16px 24px' }}>
+              <div style={{
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#999',
+                marginBottom: '12px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+              }}>
+                UPCOMING ({upcomingReminders.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {upcomingReminders.map((r, i) => (
+                  <div
+                    key={r.id}
+                    className="reminder-item"
+                    style={{
+                      background: 'white',
+                      padding: '12px 16px',
+                      borderRadius: '10px',
+                      boxShadow: '0 1px 4px rgba(0, 0, 0, 0.02)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      animationDelay: `${i * 0.03}s`,
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '14px', fontWeight: 500, color: '#333', marginBottom: '2px' }}>
+                        {r.title}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#999' }}>
+                        {formatDate(r.date)} at {formatTime(r.time)}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => deleteReminder(r.id)}
+                      style={{
+                        background: 'none',
+                        color: '#ccc',
+                        padding: '4px',
+                        fontSize: '14px',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Empty State */}
+          {todayReminders.length === 0 && upcomingReminders.length === 0 && (
+            <div style={{
+              padding: '48px 24px',
+              textAlign: 'center',
+              color: '#999',
+              animation: 'fadeIn 0.4s ease',
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '12px' }}>📭</div>
+              <div style={{ fontSize: '14px' }}>No reminders yet</div>
+              <div style={{ fontSize: '12px', marginTop: '4px' }}>Tap + Add to create one</div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Add Form Modal */}
+      {formOpen && (
+        <div
+          className="form-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.3)',
+            display: 'flex',
+            alignItems: 'flex-end',
+            zIndex: 1000,
+          }}
+          onClick={() => !working && setFormOpen(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              width: '100%',
+              borderRadius: '20px 20px 0 0',
+              padding: '24px',
+              maxHeight: '80vh',
+              overflowY: 'auto',
+              animation: 'slideUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+                Title
+              </label>
+              <input
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="What do you need to remember?"
+                style={{ width: '100%', padding: '12px', fontSize: '16px' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+                  Date
+                </label>
+                <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ width: '100%' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+                  Time
+                </label>
+                <input type="time" value={time} onChange={e => setTime(e.target.value)} style={{ width: '100%' }} />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+                Details (optional)
+              </label>
+              <input
+                value={venue}
+                onChange={e => setVenue(e.target.value)}
+                placeholder="Location, description, or notes"
+                style={{ width: '100%', padding: '12px', fontSize: '16px' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <button
+                onClick={() => setFormOpen(false)}
+                style={{
+                  background: '#f0f0f0',
+                  color: '#333',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={save}
+                disabled={working || !title.trim() || !date || !time}
+                style={{
+                  background: '#173d2f',
+                  color: 'white',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                }}
+              >
+                {working ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

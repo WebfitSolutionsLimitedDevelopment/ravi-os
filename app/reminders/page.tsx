@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 
 interface Reminder {
   id: string;
@@ -13,6 +14,7 @@ interface Reminder {
 }
 
 export default function RemindersPage() {
+  const router = useRouter();
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [todayReminders, setTodayReminders] = useState<Reminder[]>([]);
   const [upcomingReminders, setUpcomingReminders] = useState<Reminder[]>([]);
@@ -64,7 +66,8 @@ export default function RemindersPage() {
     }
   }
 
-  async function toggleComplete(id: string) {
+  async function toggleComplete(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
     const reminder = reminders.find(r => r.id === id);
     if (!reminder) return;
 
@@ -133,16 +136,6 @@ export default function RemindersPage() {
     }
   }
 
-  async function deleteReminder(id: string) {
-    if (!confirm('Delete?')) return;
-    try {
-      await fetch(`/api/reminders/${id}`, { method: 'DELETE' });
-      await load();
-    } catch (e) {
-      console.error('Delete failed:', e);
-    }
-  }
-
   function reset() {
     setTitle('');
     setDate('');
@@ -196,6 +189,7 @@ export default function RemindersPage() {
   const ReminderCard = ({ r, i, isToday }: { r: Reminder; i: number; isToday?: boolean }) => (
     <div
       key={r.id}
+      onClick={() => router.push(`/reminders/${r.id}`)}
       className={`reminder ${r.completed_at ? 'completed' : ''}`}
       style={{
         background: 'white',
@@ -208,6 +202,7 @@ export default function RemindersPage() {
         gap: '12px',
         alignItems: 'start',
         animationDelay: `${i * 0.08}s`,
+        cursor: 'pointer',
       }}
     >
       <div style={{ position: 'relative', width: isToday ? '60px' : '50px', height: '80px', borderRadius: '8px', overflow: 'hidden', background: '#f3f4f6', flexShrink: 0 }}>
@@ -232,7 +227,7 @@ export default function RemindersPage() {
       </div>
 
       <button
-        onClick={() => toggleComplete(r.id)}
+        onClick={(e) => toggleComplete(r.id, e)}
         style={{
           minWidth: '24px',
           width: '24px',

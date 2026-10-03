@@ -23,7 +23,6 @@ export default function RemindersPage() {
   const [time, setTime] = useState('');
   const [venue, setVenue] = useState('');
   const [working, setWorking] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -46,7 +45,7 @@ export default function RemindersPage() {
         setReminders(data.reminders || []);
       }
     } catch (e) {
-      console.error('Failed to load reminders:', e);
+      console.error('Failed to load:', e);
     } finally {
       setLoading(false);
     }
@@ -56,18 +55,10 @@ export default function RemindersPage() {
     if (!title.trim() || !date || !time) return;
     setWorking(true);
     try {
-      const body = {
-        title: title.trim(),
-        notes: venue.trim(),
-        date,
-        time,
-        dueAt: `${date}T${time}:00Z`,
-        source: 'text',
-      };
-      const r = await fetch(editing ? `/api/reminders/${editing}` : '/api/reminders', {
-        method: editing ? 'PUT' : 'POST',
+      const r = await fetch('/api/reminders', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ title: title.trim(), notes: venue.trim(), date, time, dueAt: `${date}T${time}:00Z`, source: 'text' }),
       });
       if (r.ok) {
         await load();
@@ -82,10 +73,10 @@ export default function RemindersPage() {
   }
 
   async function deleteReminder(id: string) {
-    if (!confirm('Delete this reminder?')) return;
+    if (!confirm('Delete?')) return;
     try {
-      const r = await fetch(`/api/reminders/${id}`, { method: 'DELETE' });
-      if (r.ok) await load();
+      await fetch(`/api/reminders/${id}`, { method: 'DELETE' });
+      await load();
     } catch (e) {
       console.error('Delete failed:', e);
     }
@@ -96,20 +87,7 @@ export default function RemindersPage() {
     setDate('');
     setTime('');
     setVenue('');
-    setEditing(null);
   }
-
-  const timeUntil = (date: string, time: string) => {
-    const target = new Date(`${date}T${time}:00`);
-    const now = new Date();
-    const diff = target.getTime() - now.getTime();
-    if (diff < 0) return 'past';
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h`;
-    return 'soon';
-  };
 
   const formatTime = (time: string) => {
     const [h, m] = time.split(':');
@@ -131,136 +109,115 @@ export default function RemindersPage() {
     return d.toLocaleDateString('en-NZ', { weekday: 'short', month: 'short', day: 'numeric' });
   };
 
+  const hoursUntil = (date: string, time: string) => {
+    const target = new Date(`${date}T${time}:00`);
+    const now = new Date();
+    const hours = (target.getTime() - now.getTime()) / (1000 * 60 * 60);
+    return Math.round(hours);
+  };
+
+  const urgencyColor = (date: string, time: string) => {
+    const hours = hoursUntil(date, time);
+    if (hours < 0) return '#dc2626';
+    if (hours < 24) return '#ea580c';
+    if (hours < 72) return '#eab308';
+    return '#10b981';
+  };
+
   return (
-    <div className={css.page}>
+    <div style={{ background: '#f9fafb', minHeight: '100vh', paddingBottom: '80px' }}>
       <style>{`
         * { box-sizing: border-box; }
-        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #fafaf9; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
         
-        @keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
         
-        .reminder-item {
-          animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        
-        .reminder-item:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-        }
-        
-        .reminder-item:active {
-          transform: translateY(0);
-        }
-        
-        button {
-          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-          cursor: pointer;
-          border: none;
-          font-weight: 500;
-          font-size: 14px;
-        }
-        
-        button:hover:not(:disabled) {
-          transform: scale(1.02);
-        }
-        
-        button:active:not(:disabled) {
-          transform: scale(0.98);
-        }
-        
-        button:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-        
-        input, select {
-          transition: all 0.2s ease;
-          border: 1px solid #e5e5e5;
-          padding: 10px 12px;
-          border-radius: 8px;
-          font-size: 14px;
-          font-family: inherit;
-        }
-        
-        input:focus, select:focus {
-          outline: none;
-          border-color: #173d2f;
-          box-shadow: 0 0 0 3px rgba(23, 61, 47, 0.1);
-        }
-        
-        .form-overlay {
-          animation: fadeIn 0.2s ease-in;
-        }
+        .reminder { animation: slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both; transition: all 0.3s ease; }
+        .reminder:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.1); }
+        .reminder:active { transform: translateY(-2px); }
       `}</style>
 
       {/* Header */}
-      <div className={css.header} style={{ animation: 'fadeIn 0.3s ease' }}>
-        <h1>Reminders</h1>
-        <button
-          onClick={() => setFormOpen(true)}
-          style={{
-            background: '#173d2f',
-            color: 'white',
-            padding: '10px 16px',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: 600,
-          }}
-        >
-          + Add
-        </button>
+      <div style={{ background: 'white', padding: '24px 20px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, zIndex: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Reminders
+            </div>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 0', color: '#111' }}>
+              What's coming up?
+            </h1>
+          </div>
+          <button
+            onClick={() => setFormOpen(true)}
+            style={{
+              width: '48px',
+              height: '48px',
+              borderRadius: '12px',
+              background: '#10b981',
+              color: 'white',
+              border: 'none',
+              fontSize: '24px',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = '#059669')}
+            onMouseLeave={e => (e.currentTarget.style.background = '#10b981')}
+          >
+            +
+          </button>
+        </div>
       </div>
 
-      {/* Loading */}
-      {loading && (
-        <div style={{ padding: '24px', textAlign: 'center', animation: 'pulse 1.5s ease-in-out infinite' }}>
-          Loading reminders...
-        </div>
-      )}
+      {/* Main Content */}
+      <div style={{ padding: '20px' }}>
+        {loading && (
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#999', animation: 'fadeIn 0.3s ease' }}>
+            Loading reminders...
+          </div>
+        )}
 
-      {!loading && (
-        <>
-          {/* Today Section */}
-          {todayReminders.length > 0 && (
-            <section style={{ padding: '0 16px 24px' }}>
-              <div style={{
-                fontSize: '12px',
-                fontWeight: 700,
-                color: '#999',
-                marginBottom: '12px',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}>
-                TODAY
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {todayReminders.map((r, i) => (
-                  <div
-                    key={r.id}
-                    className="reminder-item"
-                    style={{
-                      background: 'white',
-                      padding: '16px',
-                      borderRadius: '12px',
-                      borderLeft: '4px solid #E8A87C',
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-                      animationDelay: `${i * 0.05}s`,
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+        {!loading && (
+          <>
+            {/* Today Section */}
+            {todayReminders.length > 0 && (
+              <div style={{ marginBottom: '32px', animation: 'scaleIn 0.4s ease' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px' }}>
+                  📅 Today
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {todayReminders.map((r, i) => (
+                    <div
+                      key={r.id}
+                      className="reminder"
+                      style={{
+                        background: 'white',
+                        padding: '16px',
+                        borderRadius: '12px',
+                        borderLeft: `5px solid ${urgencyColor(r.date, r.time)}`,
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                        display: 'flex',
+                        gap: '16px',
+                        alignItems: 'flex-start',
+                        animationDelay: `${i * 0.08}s`,
+                      }}
+                    >
+                      <div style={{ fontSize: '32px', minWidth: '40px' }}>📌</div>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: '16px', fontWeight: 600, color: '#173d2f', marginBottom: '4px' }}>
+                        <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px' }}>
                           {r.title}
                         </div>
-                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }}>
                           {formatTime(r.time)}
                           {r.notes && ` • ${r.notes}`}
                         </div>
-                        <div style={{ fontSize: '12px', color: '#E8A87C', fontWeight: 500 }}>
-                          {timeUntil(r.date, r.time)} remaining
+                        <div style={{ fontSize: '12px', fontWeight: 600, color: urgencyColor(r.date, r.time) }}>
+                          {hoursUntil(r.date, r.time)} hours away
                         </div>
                       </div>
                       <button
@@ -268,101 +225,103 @@ export default function RemindersPage() {
                         style={{
                           background: 'none',
                           color: '#ccc',
+                          border: 'none',
+                          fontSize: '20px',
+                          cursor: 'pointer',
                           padding: '4px',
-                          fontSize: '16px',
+                          transition: 'color 0.2s ease',
                         }}
+                        onMouseEnter={e => (e.currentTarget.style.color = '#999')}
+                        onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
                       >
                         ✕
                       </button>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </section>
-          )}
+            )}
 
-          {/* Upcoming Section */}
-          {upcomingReminders.length > 0 && (
-            <section style={{ padding: '0 16px 24px' }}>
-              <div style={{
-                fontSize: '12px',
-                fontWeight: 700,
-                color: '#999',
-                marginBottom: '12px',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}>
-                UPCOMING ({upcomingReminders.length})
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {upcomingReminders.map((r, i) => (
-                  <div
-                    key={r.id}
-                    className="reminder-item"
-                    style={{
-                      background: 'white',
-                      padding: '12px 16px',
-                      borderRadius: '10px',
-                      boxShadow: '0 1px 4px rgba(0, 0, 0, 0.02)',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      animationDelay: `${i * 0.03}s`,
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: '14px', fontWeight: 500, color: '#333', marginBottom: '2px' }}>
-                        {r.title}
-                      </div>
-                      <div style={{ fontSize: '12px', color: '#999' }}>
-                        {formatDate(r.date)} at {formatTime(r.time)}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => deleteReminder(r.id)}
+            {/* Upcoming Timeline */}
+            {upcomingReminders.length > 0 && (
+              <div style={{ animation: 'scaleIn 0.4s ease 0.1s both' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px' }}>
+                  🗓️ Next {upcomingReminders.length}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {upcomingReminders.map((r, i) => (
+                    <div
+                      key={r.id}
+                      className="reminder"
                       style={{
-                        background: 'none',
-                        color: '#ccc',
-                        padding: '4px',
-                        fontSize: '14px',
+                        background: 'white',
+                        padding: '14px 16px',
+                        borderRadius: '10px',
+                        borderLeft: `4px solid ${urgencyColor(r.date, r.time)}`,
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        cursor: 'pointer',
+                        animationDelay: `${i * 0.05}s`,
                       }}
                     >
-                      ✕
-                    </button>
-                  </div>
-                ))}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f2937', marginBottom: '2px' }}>
+                          {r.title}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#9ca3af' }}>
+                          {formatDate(r.date)} • {formatTime(r.time)}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '12px', fontWeight: 600, color: urgencyColor(r.date, r.time), marginRight: '8px' }}>
+                        {hoursUntil(r.date, r.time)}h
+                      </div>
+                      <button
+                        onClick={() => deleteReminder(r.id)}
+                        style={{
+                          background: 'none',
+                          color: '#e5e7eb',
+                          border: 'none',
+                          fontSize: '16px',
+                          cursor: 'pointer',
+                          padding: '4px',
+                          transition: 'color 0.2s ease',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.color = '#d1d5db')}
+                        onMouseLeave={e => (e.currentTarget.style.color = '#e5e7eb')}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </section>
-          )}
+            )}
 
-          {/* Empty State */}
-          {todayReminders.length === 0 && upcomingReminders.length === 0 && (
-            <div style={{
-              padding: '48px 24px',
-              textAlign: 'center',
-              color: '#999',
-              animation: 'fadeIn 0.4s ease',
-            }}>
-              <div style={{ fontSize: '48px', marginBottom: '12px' }}>📭</div>
-              <div style={{ fontSize: '14px' }}>No reminders yet</div>
-              <div style={{ fontSize: '12px', marginTop: '4px' }}>Tap + Add to create one</div>
-            </div>
-          )}
-        </>
-      )}
+            {/* Empty State */}
+            {todayReminders.length === 0 && upcomingReminders.length === 0 && (
+              <div style={{ padding: '60px 20px', textAlign: 'center', animation: 'fadeIn 0.4s ease' }}>
+                <div style={{ fontSize: '64px', marginBottom: '16px' }}>✨</div>
+                <div style={{ fontSize: '16px', fontWeight: 600, color: '#1f2937', marginBottom: '4px' }}>All clear!</div>
+                <div style={{ fontSize: '13px', color: '#9ca3af' }}>You have no upcoming reminders</div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
-      {/* Add Form Modal */}
+      {/* Form Modal */}
       {formOpen && (
         <div
-          className="form-overlay"
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.3)',
+            background: 'rgba(0,0,0,0.3)',
             display: 'flex',
             alignItems: 'flex-end',
             zIndex: 1000,
+            animation: 'fadeIn 0.2s ease',
           }}
           onClick={() => !working && setFormOpen(false)}
         >
@@ -378,70 +337,60 @@ export default function RemindersPage() {
             }}
             onClick={e => e.stopPropagation()}
           >
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
-                Title
+            <h2 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '20px', color: '#111' }}>Add reminder</h2>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>
+                What do you need to remember?
               </label>
               <input
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                placeholder="What do you need to remember?"
-                style={{ width: '100%', padding: '12px', fontSize: '16px' }}
+                placeholder="Reminder title"
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  fontSize: '16px',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  fontFamily: 'inherit',
+                }}
               />
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>
                   Date
                 </label>
-                <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ width: '100%' }} />
+                <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ width: '100%', padding: '12px', fontSize: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }} />
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>
                   Time
                 </label>
-                <input type="time" value={time} onChange={e => setTime(e.target.value)} style={{ width: '100%' }} />
+                <input type="time" value={time} onChange={e => setTime(e.target.value)} style={{ width: '100%', padding: '12px', fontSize: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }} />
               </div>
             </div>
 
             <div style={{ marginBottom: '24px' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#666', marginBottom: '8px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>
                 Details (optional)
               </label>
               <input
                 value={venue}
                 onChange={e => setVenue(e.target.value)}
-                placeholder="Location, description, or notes"
-                style={{ width: '100%', padding: '12px', fontSize: '16px' }}
+                placeholder="Location, description..."
+                style={{ width: '100%', padding: '12px', fontSize: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }}
               />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <button
-                onClick={() => setFormOpen(false)}
-                style={{
-                  background: '#f0f0f0',
-                  color: '#333',
-                  padding: '12px',
-                  borderRadius: '8px',
-                  fontWeight: 600,
-                }}
-              >
+              <button onClick={() => setFormOpen(false)} style={{ padding: '12px', background: '#f3f4f6', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
                 Cancel
               </button>
-              <button
-                onClick={save}
-                disabled={working || !title.trim() || !date || !time}
-                style={{
-                  background: '#173d2f',
-                  color: 'white',
-                  padding: '12px',
-                  borderRadius: '8px',
-                  fontWeight: 600,
-                }}
-              >
-                {working ? 'Saving...' : 'Save'}
+              <button onClick={save} disabled={working || !title.trim() || !date || !time} style={{ padding: '12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: 600, cursor: working ? 'not-allowed' : 'pointer', opacity: working ? 0.6 : 1 }}>
+                {working ? 'Saving...' : 'Add'}
               </button>
             </div>
           </div>

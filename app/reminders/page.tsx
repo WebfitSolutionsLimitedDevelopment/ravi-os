@@ -4,10 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 interface Reminder {
   id: string;
   title: string;
-  date: string;
-  time: string;
+  event_date: string;
+  event_time: string;
   notes: string;
-  completed?: boolean;
+  completed_at?: string;
 }
 
 export default function RemindersPage() {
@@ -32,11 +32,11 @@ export default function RemindersPage() {
 
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
-    const active = reminders.filter(r => !r.completed);
-    const done = reminders.filter(r => r.completed);
+    const active = reminders.filter(r => !r.completed_at);
+    const done = reminders.filter(r => r.completed_at);
     
-    const todayList = active.filter(r => r.date === today).sort((a, b) => a.time.localeCompare(b.time));
-    const upcomingList = active.filter(r => r.date > today).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    const todayList = active.filter(r => r.event_date === today).sort((a, b) => a.event_time.localeCompare(b.event_time));
+    const upcomingList = active.filter(r => r.event_date > today).sort((a, b) => a.event_date.localeCompare(b.event_date) || a.event_time.localeCompare(b.event_time));
     
     setTodayReminders(todayList);
     setUpcomingReminders(upcomingList);
@@ -63,10 +63,11 @@ export default function RemindersPage() {
     if (!reminder) return;
 
     try {
+      const completed_at = reminder.completed_at ? null : new Date().toISOString();
       await fetch(`/api/reminders/${id}`, {
-        method: 'PATCH',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed: !reminder.completed }),
+        body: JSON.stringify({ completed_at }),
       });
       await load();
     } catch (e) {
@@ -91,9 +92,9 @@ export default function RemindersPage() {
           if (r.ok) {
             const data = await r.json();
             setTitle(data.title || '');
-            setDate(data.date || '');
-            setTime(data.time || '');
-            setVenue(data.location || '');
+            setDate(data.event_date || '');
+            setTime(data.event_time || '');
+            setVenue(data.notes || '');
           }
         } catch (err) {
           console.error('Extraction failed:', err);
@@ -112,7 +113,7 @@ export default function RemindersPage() {
       const r = await fetch('/api/reminders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: title.trim(), notes: venue.trim(), date, time, dueAt: `${date}T${time}:00Z`, source: 'text' }),
+        body: JSON.stringify({ title: title.trim(), notes: venue.trim(), event_date: date, event_time: time, source: 'text' }),
       });
       if (r.ok) {
         await load();
@@ -155,9 +156,6 @@ export default function RemindersPage() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
     const eventDate = new Date(date);
     eventDate.setHours(0, 0, 0, 0);
     
@@ -182,6 +180,83 @@ export default function RemindersPage() {
     if (hours < 72) return '#eab308';
     return '#10b981';
   };
+
+  const ReminderCard = ({ r, i, isToday }: { r: Reminder; i: number; isToday?: boolean }) => (
+    <div
+      key={r.id}
+      className={`reminder ${r.completed_at ? 'completed' : ''}`}
+      style={{
+        background: 'white',
+        padding: isToday ? '16px' : '14px 16px',
+        borderRadius: isToday ? '12px' : '10px',
+        borderLeft: `${isToday ? 5 : 4}px solid ${urgencyColor(r.event_date, r.event_time)}`,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        display: 'grid',
+        gridTemplateColumns: isToday ? '60px 1fr 40px' : '50px 1fr 40px',
+        gap: '12px',
+        alignItems: 'start',
+        animationDelay: `${i * 0.08}s`,
+      }}
+    >
+      {/* Poster */}
+      <div style={{ position: 'relative', width: isToday ? '60px' : '50px', height: '80px', borderRadius: '8px', overflow: 'hidden', background: '#f3f4f6', flexShrink: 0 }}>
+        <img
+          src={`/api/reminders/${r.id}/poster`}
+          alt={r.title}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          onError={(e) => {
+            (e.target as HTMLImageElement).style.display = 'none';
+          }}
+        />
+      </div>
+
+      {/* Content */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <div style={{ fontSize: isToday ? '16px' : '14px', fontWeight: 700, color: '#111', textDecoration: r.completed_at ? 'line-through' : 'none' }}>
+          {r.title}
+        </div>
+        <div style={{ fontSize: isToday ? '13px' : '12px', color: '#666' }}>
+          {readableTime(r.event_date, r.event_time)}
+          {r.notes && ` • ${r.notes}`}
+        </div>
+      </div>
+
+      {/* Checkbox */}
+      <button
+        onClick={() => toggleComplete(r.id)}
+        style={{
+          minWidth: '24px',
+          width: '24px',
+          height: '24px',
+          borderRadius: '5px',
+          border: `2px solid ${urgencyColor(r.event_date, r.event_time)}`,
+          background: r.completed_at ? urgencyColor(r.event_date, r.event_time) : 'white',
+          color: 'white',
+          fontSize: '14px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'all 0.2s ease',
+          flexShrink: 0,
+        }}
+        onMouseEnter={e => {
+          if (!r.completed_at) {
+            e.currentTarget.style.background = urgencyColor(r.event_date, r.event_time);
+            e.currentTarget.style.color = 'white';
+          }
+        }}
+        onMouseLeave={e => {
+          if (!r.completed_at) {
+            e.currentTarget.style.background = 'white';
+            e.currentTarget.style.color = 'inherit';
+          }
+        }}
+      >
+        {r.completed_at ? '✓' : ''}
+      </button>
+    </div>
+  );
 
   return (
     <div style={{ background: '#f9fafb', minHeight: '100vh', paddingBottom: '80px' }}>
@@ -218,14 +293,7 @@ export default function RemindersPage() {
                 <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px' }}>📅 Today</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {todayReminders.map((r, i) => (
-                    <div key={r.id} className={`reminder ${r.completed ? 'completed' : ''}`} style={{ background: 'white', padding: '16px', borderRadius: '12px', borderLeft: `5px solid ${urgencyColor(r.date, r.time)}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)', display: 'flex', gap: '12px', alignItems: 'flex-start', animationDelay: `${i * 0.08}s` }}>
-                      <button onClick={() => toggleComplete(r.id)} style={{ minWidth: '28px', width: '28px', height: '28px', borderRadius: '6px', border: `2px solid ${urgencyColor(r.date, r.time)}`, background: r.completed ? urgencyColor(r.date, r.time) : 'white', color: 'white', fontSize: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '2px', transition: 'all 0.2s ease' }} onMouseEnter={e => { if (!r.completed) { e.currentTarget.style.background = urgencyColor(r.date, r.time); e.currentTarget.style.color = 'white'; } }} onMouseLeave={e => { if (!r.completed) { e.currentTarget.style.background = 'white'; e.currentTarget.style.color = 'inherit'; } }}>{r.completed ? '✓' : ''}</button>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px', textDecoration: r.completed ? 'line-through' : 'none' }}>{r.title}</div>
-                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }}>{readableTime(r.date, r.time)}{r.notes && ` • ${r.notes}`}</div>
-                      </div>
-                      <button onClick={() => deleteReminder(r.id)} style={{ background: 'none', color: '#ccc', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '4px', transition: 'color 0.2s ease' }} onMouseEnter={e => (e.currentTarget.style.color = '#999')} onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}>✕</button>
-                    </div>
+                    <ReminderCard key={r.id} r={r} i={i} isToday={true} />
                   ))}
                 </div>
               </div>
@@ -236,14 +304,7 @@ export default function RemindersPage() {
                 <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px' }}>🗓️ Next {upcomingReminders.length}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {upcomingReminders.map((r, i) => (
-                    <div key={r.id} className={`reminder ${r.completed ? 'completed' : ''}`} style={{ background: 'white', padding: '14px 16px', borderRadius: '10px', borderLeft: `4px solid ${urgencyColor(r.date, r.time)}`, boxShadow: '0 1px 2px rgba(0,0,0,0.03)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', animationDelay: `${i * 0.05}s` }}>
-                      <button onClick={() => toggleComplete(r.id)} style={{ minWidth: '24px', width: '24px', height: '24px', borderRadius: '5px', border: `2px solid ${urgencyColor(r.date, r.time)}`, background: r.completed ? urgencyColor(r.date, r.time) : 'white', color: 'white', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s ease', flexShrink: 0 }}>{r.completed ? '✓' : ''}</button>
-                      <div style={{ flex: 1, marginLeft: '12px' }}>
-                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f2937', marginBottom: '2px', textDecoration: r.completed ? 'line-through' : 'none' }}>{r.title}</div>
-                        <div style={{ fontSize: '12px', color: '#9ca3af' }}>{readableTime(r.date, r.time)}</div>
-                      </div>
-                      <button onClick={() => deleteReminder(r.id)} style={{ background: 'none', color: '#e5e7eb', border: 'none', fontSize: '16px', cursor: 'pointer', padding: '4px', transition: 'color 0.2s ease', flexShrink: 0 }} onMouseEnter={e => (e.currentTarget.style.color = '#d1d5db')} onMouseLeave={e => (e.currentTarget.style.color = '#e5e7eb')}>✕</button>
-                    </div>
+                    <ReminderCard key={r.id} r={r} i={i} />
                   ))}
                 </div>
               </div>
@@ -255,13 +316,7 @@ export default function RemindersPage() {
                 {showCompleted && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {completedReminders.map((r) => (
-                      <div key={r.id} style={{ background: '#f3f4f6', padding: '14px 16px', borderRadius: '10px', borderLeft: '4px solid #10b981', boxShadow: '0 1px 2px rgba(0,0,0,0.03)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', opacity: 0.6 }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f2937', marginBottom: '2px', textDecoration: 'line-through' }}>{r.title}</div>
-                          <div style={{ fontSize: '12px', color: '#9ca3af' }}>{readableTime(r.date, r.time)}</div>
-                        </div>
-                        <button onClick={() => deleteReminder(r.id)} style={{ background: 'none', color: '#d1d5db', border: 'none', fontSize: '16px', cursor: 'pointer', padding: '4px' }}>✕</button>
-                      </div>
+                      <ReminderCard key={r.id} r={r} i={0} />
                     ))}
                   </div>
                 )}

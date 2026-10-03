@@ -4,8 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 interface Reminder {
   id: string;
   title: string;
-  event_date: string;
-  event_time: string;
+  event_date?: string;
+  event_time?: string;
+  date?: string;
+  time?: string;
   notes: string;
   completed_at?: string;
 }
@@ -35,8 +37,11 @@ export default function RemindersPage() {
     const active = reminders.filter(r => !r.completed_at);
     const done = reminders.filter(r => r.completed_at);
     
-    const todayList = active.filter(r => r.event_date === today).sort((a, b) => a.event_time.localeCompare(b.event_time));
-    const upcomingList = active.filter(r => r.event_date > today).sort((a, b) => a.event_date.localeCompare(b.event_date) || a.event_time.localeCompare(b.event_time));
+    const getDate = (r: Reminder) => r.event_date || r.date || '';
+    const getTime = (r: Reminder) => r.event_time || r.time || '';
+    
+    const todayList = active.filter(r => getDate(r) === today).sort((a, b) => getTime(a).localeCompare(getTime(b)));
+    const upcomingList = active.filter(r => getDate(r) > today).sort((a, b) => getDate(a).localeCompare(getDate(b)) || getTime(a).localeCompare(getTime(b)));
     
     setTodayReminders(todayList);
     setUpcomingReminders(upcomingList);
@@ -49,7 +54,8 @@ export default function RemindersPage() {
       const r = await fetch('/api/reminders');
       if (r.ok) {
         const data = await r.json();
-        setReminders(data.reminders || []);
+        console.log('API response:', data);
+        setReminders(data.reminders || data || []);
       }
     } catch (e) {
       console.error('Failed to load:', e);
@@ -92,8 +98,8 @@ export default function RemindersPage() {
           if (r.ok) {
             const data = await r.json();
             setTitle(data.title || '');
-            setDate(data.event_date || '');
-            setTime(data.event_time || '');
+            setDate(data.event_date || data.date || '');
+            setTime(data.event_time || data.time || '');
             setVenue(data.notes || '');
           }
         } catch (err) {
@@ -145,6 +151,7 @@ export default function RemindersPage() {
   }
 
   const formatTime = (time: string) => {
+    if (!time) return '';
     const [h, m] = time.split(':');
     const hour = parseInt(h);
     const ampm = hour >= 12 ? 'PM' : 'AM';
@@ -153,6 +160,7 @@ export default function RemindersPage() {
   };
 
   const readableTime = (date: string, time: string) => {
+    if (!date || !time) return '';
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
@@ -171,6 +179,7 @@ export default function RemindersPage() {
   };
 
   const urgencyColor = (date: string, time: string) => {
+    if (!date || !time) return '#10b981';
     const target = new Date(`${date}T${time}:00`);
     const now = new Date();
     const hours = (target.getTime() - now.getTime()) / (1000 * 60 * 60);
@@ -181,6 +190,9 @@ export default function RemindersPage() {
     return '#10b981';
   };
 
+  const getDate = (r: Reminder) => r.event_date || r.date || '';
+  const getTime = (r: Reminder) => r.event_time || r.time || '';
+
   const ReminderCard = ({ r, i, isToday }: { r: Reminder; i: number; isToday?: boolean }) => (
     <div
       key={r.id}
@@ -189,7 +201,7 @@ export default function RemindersPage() {
         background: 'white',
         padding: isToday ? '16px' : '14px 16px',
         borderRadius: isToday ? '12px' : '10px',
-        borderLeft: `${isToday ? 5 : 4}px solid ${urgencyColor(r.event_date, r.event_time)}`,
+        borderLeft: `${isToday ? 5 : 4}px solid ${urgencyColor(getDate(r), getTime(r))}`,
         boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
         display: 'grid',
         gridTemplateColumns: isToday ? '60px 1fr 40px' : '50px 1fr 40px',
@@ -198,7 +210,6 @@ export default function RemindersPage() {
         animationDelay: `${i * 0.08}s`,
       }}
     >
-      {/* Poster */}
       <div style={{ position: 'relative', width: isToday ? '60px' : '50px', height: '80px', borderRadius: '8px', overflow: 'hidden', background: '#f3f4f6', flexShrink: 0 }}>
         <img
           src={`/api/reminders/${r.id}/poster`}
@@ -210,18 +221,16 @@ export default function RemindersPage() {
         />
       </div>
 
-      {/* Content */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
         <div style={{ fontSize: isToday ? '16px' : '14px', fontWeight: 700, color: '#111', textDecoration: r.completed_at ? 'line-through' : 'none' }}>
           {r.title}
         </div>
         <div style={{ fontSize: isToday ? '13px' : '12px', color: '#666' }}>
-          {readableTime(r.event_date, r.event_time)}
+          {readableTime(getDate(r), getTime(r))}
           {r.notes && ` • ${r.notes}`}
         </div>
       </div>
 
-      {/* Checkbox */}
       <button
         onClick={() => toggleComplete(r.id)}
         style={{
@@ -229,8 +238,8 @@ export default function RemindersPage() {
           width: '24px',
           height: '24px',
           borderRadius: '5px',
-          border: `2px solid ${urgencyColor(r.event_date, r.event_time)}`,
-          background: r.completed_at ? urgencyColor(r.event_date, r.event_time) : 'white',
+          border: `2px solid ${urgencyColor(getDate(r), getTime(r))}`,
+          background: r.completed_at ? urgencyColor(getDate(r), getTime(r)) : 'white',
           color: 'white',
           fontSize: '14px',
           cursor: 'pointer',
@@ -239,18 +248,6 @@ export default function RemindersPage() {
           justifyContent: 'center',
           transition: 'all 0.2s ease',
           flexShrink: 0,
-        }}
-        onMouseEnter={e => {
-          if (!r.completed_at) {
-            e.currentTarget.style.background = urgencyColor(r.event_date, r.event_time);
-            e.currentTarget.style.color = 'white';
-          }
-        }}
-        onMouseLeave={e => {
-          if (!r.completed_at) {
-            e.currentTarget.style.background = 'white';
-            e.currentTarget.style.color = 'inherit';
-          }
         }}
       >
         {r.completed_at ? '✓' : ''}
@@ -346,8 +343,8 @@ export default function RemindersPage() {
             </div>
 
             <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>What do you need to remember?</label>
-              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Reminder title" style={{ width: '100%', padding: '12px', fontSize: '16px', border: '1px solid #e5e7eb', borderRadius: '8px', fontFamily: 'inherit' }} />
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>Title</label>
+              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Event name" style={{ width: '100%', padding: '12px', fontSize: '16px', border: '1px solid #e5e7eb', borderRadius: '8px', fontFamily: 'inherit' }} />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>

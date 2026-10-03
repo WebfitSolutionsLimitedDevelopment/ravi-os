@@ -1,176 +1,69 @@
-'use client';
-import { useState, useEffect } from 'react';
+'use client'
 
-interface Reminder {
-  id: string;
-  title: string;
-  date?: string;
-  time?: string;
-  event_date?: string;
-  event_time?: string;
-  notes?: string;
-  completed?: boolean;
-  completed_at?: string;
-}
+import Link from 'next/link'
+import { ChangeEvent, useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, BellRing, CalendarPlus, Camera, ChevronRight, Edit3, FileImage, Image as ImageIcon, Plus, Save, Trash2, X } from 'lucide-react'
+import { extractPosterFields } from '../../lib/poster-extract-client'
+import { readReminderCache, writeReminderCache } from '../../lib/reminder-client-cache'
+import styles from './reminders.module.css'
 
-export default function RemindersPage() {
-  const [reminders, setReminders] = useState<Reminder[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+type Reminder={id:string;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;posterUrl?:string;createdBy?:string;legacyClientId?:string;notified?:boolean}
+type LegacyReminder={id:number;title:string;notes:string;date:string;time:string;source:'text'|'voice'|'image';imageName?:string;imageDataUrl?:string;notified?:boolean}
+const storageKey='ravi-os-reminders-v2'
+// Reminder times are usually "HH:MM" but some (bulk-imported/shared ones)
+// come through as "HH:MM:SS" — naively appending ":00" to those produces
+// an invalid date, which broke sorting and showed "NaNd left" countdowns.
+function normTime(t:string){const m=String(t||'').match(/^(\d{1,2}):(\d{2})/);return m?`${m[1].padStart(2,'0')}:${m[2]}`:'23:59'}
+function stamp(r:Reminder){return new Date(`${r.date}T${normTime(r.time)}:00`).getTime()}
+function urgency(r:Reminder){const h=(stamp(r)-Date.now())/3600000;if(h<=24)return'today';if(h<=48)return'tomorrow';if(h<=72)return'soon';return'later'}
+function countdown(r:Reminder){const d=stamp(r)-Date.now();if(d<0)return'Overdue';const m=Math.max(1,Math.round(d/60000));if(m<60)return`${m}m left`;const h=Math.floor(m/60);if(h<24)return`${h}h ${m%60}m left`;const days=Math.floor(h/24);return`${days}d ${h%24}h left`}
+function dueAt(date:string,time:string){return new Date(`${date}T${normTime(time)}:00`).toISOString()}
+// A poster thumbnail replaces the date box in the list row, and the
+// countdown pill only ever says "1d 2h left" — neither tells you the actual
+// date and time without opening the reminder. This gives every row a
+// plain-language "Sat 12 Sep · 5:00pm" line so that's visible at a glance.
+function fmtTime12(t:string){const[h,m]=normTime(t).split(':').map(Number);const period=h>=12?'pm':'am';const h12=h%12||12;return `${h12}:${String(m).padStart(2,'0')}${period}`}
+function whenLabel(r:Reminder){const d=new Date(`${r.date}T12:00:00`).toLocaleDateString('en-NZ',{weekday:'short',day:'numeric',month:'short'});return `${d} · ${fmtTime12(r.time)}`}
+function calendarUrl(r:Reminder){const start=new Date(`${r.date}T${normTime(r.time)}:00`);const end=new Date(start.getTime()+1800000);const fmt=(d:Date)=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z');const p=new URLSearchParams({action:'TEMPLATE',text:r.title,dates:`${fmt(start)}/${fmt(end)}`,details:r.notes||'Created from Ravi OS',ctz:'Pacific/Auckland'});return`https://calendar.google.com/calendar/render?${p.toString()}`}
+function readLocal():Reminder[]{try{const rows:LegacyReminder[]=JSON.parse(localStorage.getItem(storageKey)||'[]');return rows.map(r=>({id:`local-${r.id}`,title:r.title,notes:r.notes||'',date:r.date,time:r.time,source:r.source,imageName:r.imageName,posterUrl:r.imageDataUrl,createdBy:'ravi',legacyClientId:String(r.id),notified:r.notified}))}catch{return[]}}
+// Local rows are only an offline fallback. They used to keep the full poster
+// image forever, so Safari's ~5MB localStorage filled up after a handful of
+// posters; setItem then threw QuotaExceededError inside save() and the button
+// hung on "Working…" without ever calling the server. Writes are now guarded,
+// fall back to dropping the image, and synced rows get pruned.
+function writeLocal(rows:LegacyReminder[]):boolean{try{if(!rows.length){localStorage.removeItem(storageKey);return true}localStorage.setItem(storageKey,JSON.stringify(rows));return true}catch{try{localStorage.setItem(storageKey,JSON.stringify(rows.map(({imageDataUrl,...r})=>r)));return true}catch{return false}}}
+function readLegacyRows():LegacyReminder[]{try{return JSON.parse(localStorage.getItem(storageKey)||'[]')}catch{return[]}}
+function pruneLocal(serverLegacyIds:Set<string>){const rows=readLegacyRows();const keep=rows.filter(r=>!serverLegacyIds.has(String(r.id)));if(keep.length!==rows.length)writeLocal(keep)}
+function mergeReminders(server:Reminder[],local:Reminder[]){const serverLegacy=new Set(server.map(r=>r.legacyClientId).filter(Boolean));return [...server,...local.filter(r=>!r.legacyClientId||!serverLegacy.has(r.legacyClientId))].sort((a,b)=>stamp(a)-stamp(b))}
 
-  useEffect(() => {
-    load();
-  }, []);
+export default function ReminderCentre(){
+  const[reminders,setReminders]=useState<Reminder[]>([]);const[loading,setLoading]=useState(true);const[formOpen,setFormOpen]=useState(false);const[editing,setEditing]=useState<string|null>(null)
+  const[title,setTitle]=useState('');const[date,setDate]=useState('');const[time,setTime]=useState('');const[venue,setVenue]=useState('');const[imageName,setImageName]=useState('');const[imageData,setImageData]=useState('')
+  const[working,setWorking]=useState(false);const[message,setMessage]=useState('');const[notificationStatus,setNotificationStatus]=useState('Not enabled');const[syncMessage,setSyncMessage]=useState('')
 
-  async function load() {
-    try {
-      setLoading(true);
-      const res = await fetch('/api/reminders');
-      const data = await res.json();
-      console.log('API response:', data);
-      
-      // Handle both { reminders: [...] } and direct array
-      const list = Array.isArray(data) ? data : (data.reminders || []);
-      setReminders(list);
-      setError('');
-    } catch (e) {
-      console.error('Load error:', e);
-      setError('Failed to load reminders');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function toggleDone(id: string) {
-    const reminder = reminders.find(r => r.id === id);
-    if (!reminder) return;
-
-    try {
-      const newCompleted = reminder.completed_at ? null : new Date().toISOString();
-      const res = await fetch(`/api/reminders/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed_at: newCompleted }),
-      });
-      
-      if (res.ok) {
-        await load();
-      }
-    } catch (e) {
-      console.error('Toggle error:', e);
-    }
-  }
-
-  if (loading) {
-    return <div style={{ padding: '20px', textAlign: 'center' }}>Loading...</div>;
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: '20px', color: 'red' }}>
-        {error}
-        <button onClick={load} style={{ marginLeft: '10px', padding: '5px 10px' }}>Retry</button>
-      </div>
-    );
-  }
-
-  const getDate = (r: Reminder) => r.event_date || r.date || '';
-  const getTime = (r: Reminder) => r.event_time || r.time || '';
-
-  const active = reminders.filter(r => !r.completed_at);
-  const done = reminders.filter(r => r.completed_at);
-
-  return (
-    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '20px', fontFamily: 'system-ui, sans-serif' }}>
-      <h1>Reminders</h1>
-
-      {active.length === 0 && done.length === 0 ? (
-        <p style={{ color: '#999' }}>No reminders</p>
-      ) : (
-        <>
-          {active.length > 0 && (
-            <div style={{ marginBottom: '30px' }}>
-              <h2 style={{ fontSize: '14px', color: '#666', fontWeight: 600, textTransform: 'uppercase', marginBottom: '12px' }}>Active ({active.length})</h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {active.map(r => (
-                  <div
-                    key={r.id}
-                    style={{
-                      padding: '12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '8px',
-                      display: 'flex',
-                      gap: '12px',
-                      alignItems: 'start',
-                      backgroundColor: '#fff',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!r.completed_at}
-                      onChange={() => toggleDone(r.id)}
-                      style={{ marginTop: '3px', cursor: 'pointer' }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: '15px' }}>{r.title}</div>
-                      {(getDate(r) || getTime(r)) && (
-                        <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
-                          {getDate(r)} {getTime(r) && `at ${getTime(r)}`}
-                        </div>
-                      )}
-                      {r.notes && (
-                        <div style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>
-                          {r.notes}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {done.length > 0 && (
-            <div>
-              <h2 style={{ fontSize: '14px', color: '#666', fontWeight: 600, textTransform: 'uppercase', marginBottom: '12px' }}>Done ({done.length})</h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {done.map(r => (
-                  <div
-                    key={r.id}
-                    style={{
-                      padding: '12px',
-                      border: '1px solid #e0e0e0',
-                      borderRadius: '8px',
-                      display: 'flex',
-                      gap: '12px',
-                      alignItems: 'start',
-                      backgroundColor: '#f5f5f5',
-                      opacity: 0.6,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!r.completed_at}
-                      onChange={() => toggleDone(r.id)}
-                      style={{ marginTop: '3px', cursor: 'pointer' }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: '15px', textDecoration: 'line-through' }}>
-                        {r.title}
-                      </div>
-                      {(getDate(r) || getTime(r)) && (
-                        <div style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>
-                          {getDate(r)} {getTime(r) && `at ${getTime(r)}`}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
+  const load=async()=>{const local=readLocal();const cached=readReminderCache<Reminder>();const instant=mergeReminders(cached,local);if(instant.length){setReminders(instant);setLoading(false)}else if(local.length){setReminders(local);setLoading(false)}try{const r=await fetch('/api/reminders');if(r.ok){const d=await r.json();const server:Reminder[]=d.reminders||[];writeReminderCache(server);pruneLocal(new Set(server.map(x=>x.legacyClientId).filter(Boolean) as string[]));setReminders(mergeReminders(server,readLocal()));setSyncMessage('')}else if(instant.length){setSyncMessage('Showing the latest saved reminder snapshot while shared sync reconnects.')}}catch{if(instant.length)setSyncMessage('Showing the latest saved reminder snapshot while shared sync reconnects.')}finally{setLoading(false)}}
+  const migrateLocal=async()=>{const local=readLocal();if(!local.length)return;let allSaved=true;for(const old of local){try{const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:old.title,notes:old.notes||'',date:old.date,time:old.time,dueAt:dueAt(old.date,old.time),source:old.source,imageName:old.imageName,imageDataUrl:old.posterUrl,legacyClientId:old.legacyClientId})});if(!r.ok)allSaved=false}catch{allSaved=false}}if(allSaved)localStorage.setItem('ravi-os-reminders-migrated','1')}
+  useEffect(()=>{if('Notification'in window)setNotificationStatus(Notification.permission==='granted'?'Enabled on this device':'Not enabled');const cached=readReminderCache<Reminder>();const local=readLocal();const instant=mergeReminders(cached,local);if(instant.length){setReminders(instant);setLoading(false)};(async()=>{await migrateLocal();await load()})()},[])
+  // Nearest-first sorting alone pushes every OVERDUE reminder to the very
+  // top (an old, missed event has the smallest timestamp of all), so the
+  // list opened on a wall of red "Overdue" cards before anything current or
+  // upcoming was visible. Keep today/upcoming exactly as before — soonest
+  // first — but demote anything already past its time to the end of the
+  // list, most-recently-missed first, so it's still there to deal with but
+  // never buries what's actually coming up.
+  const sorted=useMemo(()=>{const now=Date.now();const future=reminders.filter(r=>stamp(r)>=now).sort((a,b)=>stamp(a)-stamp(b));const past=reminders.filter(r=>stamp(r)<now).sort((a,b)=>stamp(b)-stamp(a));return [...future,...past]},[reminders]);const upcoming=useMemo(()=>sorted.filter(r=>stamp(r)>=Date.now()),[sorted])
+  const reset=()=>{setEditing(null);setTitle('');setDate('');setTime('');setVenue('');setImageName('');setImageData('');setMessage('')}
+  const openAdd=()=>{reset();setFormOpen(true)}
+  const edit=(r:Reminder)=>{setEditing(r.id);setTitle(r.title);setDate(r.date);setTime(r.time);setVenue(r.notes||'');setImageName(r.imageName||'');setImageData(r.posterUrl||'');setFormOpen(true);window.scrollTo({top:0,behavior:'smooth'})}
+  const requestNotifications=async()=>{if(!('Notification'in window)){setNotificationStatus('Use Calendar alerts on this browser');return}const p=await Notification.requestPermission();setNotificationStatus(p==='granted'?'Enabled on this device':'Not enabled')}
+  async function onPoster(e:ChangeEvent<HTMLInputElement>){const file=e.target.files?.[0];if(!file)return;setWorking(true);setMessage('Reading the event poster…');setImageName(file.name);setTitle('');setDate('');setTime('');setVenue('');try{const p=await extractPosterFields(file);setImageData(p.imageDataUrl);setTitle(p.title==='Event reminder'?'':p.title);setDate(p.date||'');setTime(p.time||'');setVenue([p.venue,p.address].filter(Boolean).join(', '));setMessage(p.title&&p.title!=='Event reminder'&&p.date&&p.time?'Poster read. Check once and save.':'I could not confidently read every field. Please fill only the missing field(s), then save.')}catch{setImageData('');setMessage('I could not read this poster reliably. Please enter the event title, date, time and venue.')}finally{setWorking(false)}}
+  async function save(){if(!title.trim()||!date||!time)return;setWorking(true);setMessage('Saving…');try{const isLocalEdit=Boolean(editing?.startsWith('local-'));const legacyId=isLocalEdit?Number(editing!.slice(6)):Date.now();let legacyRows=readLegacyRows();const localRow:LegacyReminder={id:legacyId,title:title.trim(),notes:venue.trim(),date,time,source:imageName?'image':'text',imageName:imageName||undefined,imageDataUrl:imageData||undefined};if(isLocalEdit)legacyRows=legacyRows.map(r=>r.id===legacyId?localRow:r);else if(!editing)legacyRows=[localRow,...legacyRows];writeLocal(legacyRows);setReminders(prev=>mergeReminders(prev.filter(r=>r.id!==`local-${legacyId}`),readLocal()));const body:any={title:title.trim(),notes:venue.trim(),date,time,dueAt:dueAt(date,time),source:imageName?'image':'text',imageName:imageName||undefined,imageDataUrl:imageData||undefined,legacyClientId:String(legacyId),recurrence_pattern:recurrence==='once'?null:recurrence,recurrence_end_date:recurrenceEnd==='date'?recurrenceUntilDate:null};try{const r=await fetch(editing&&!isLocalEdit?`/api/reminders/${editing}`:'/api/reminders',{method:editing&&!isLocalEdit?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.ok){writeLocal(readLegacyRows().filter(x=>x.id!==legacyId));await load();setSyncMessage('')}else setSyncMessage('Saved safely on this device. Shared sync is not connected yet.')}catch{setSyncMessage('Saved safely on this device. Shared sync is not connected yet.')}setFormOpen(false);reset()}catch{setMessage('Could not save this reminder. Please try again.')}finally{setWorking(false)}}
+  async function remove(id:string){if(!confirm('Delete this reminder?'))return;if(id.startsWith('local-')){const localId=Number(id.slice(6));let rows:LegacyReminder[]=[];try{rows=JSON.parse(localStorage.getItem(storageKey)||'[]')}catch{};writeLocal(rows.filter(r=>r.id!==localId));setReminders(prev=>prev.filter(r=>r.id!==id));return}const r=await fetch(`/api/reminders/${id}`,{method:'DELETE'});if(r.ok)await load()}
+  return <main className={styles.shell}>
+    <header className={styles.header}><Link href="/" className={styles.back}><ArrowLeft/> Ravi OS</Link><div className={styles.heading}><p>REMINDERS</p><h1>What’s coming up?</h1><span>One shared reminder list for Ravi and Geet. Nearest event always comes first.</span></div><button onClick={requestNotifications} className={styles.notify}><BellRing/><span><b>Phone alerts</b><small>{notificationStatus}</small></span></button></header>
+    {syncMessage&&<div className={styles.saved} style={{maxWidth:1180,margin:'0 auto 12px'}}>{syncMessage}</div>}
+    <section className={styles.captureGrid}><div className={styles.captureCard}><div className={styles.captureHead}><span><Plus/></span><div><p>ADD REMINDER</p><h2>Poster or quick entry</h2></div></div><div className={styles.captureActions}><label><ImageIcon/>Choose poster<input type="file" accept="image/*" onChange={e=>{openAdd();onPoster(e)}}/></label><label><Camera/>Use camera<input type="file" accept="image/*" capture="environment" onChange={e=>{openAdd();onPoster(e)}}/></label><button className={styles.analyse} onClick={openAdd}><Plus/>Type reminder</button></div><p style={{fontSize:11,color:'#748078',margin:'12px 0 0'}}>Poster extraction keeps only event title, date, time, venue and address.</p></div><div className={styles.confirmCard}><div className={styles.confirmHead}><div><p>NEXT</p><h2>{upcoming[0]?.title||'No upcoming reminder'}</h2></div><span>{upcoming[0]?countdown(upcoming[0]):'All clear'}</span></div>{upcoming[0]?<><div className={styles.two}><div><small>Date</small><b>{new Date(`${upcoming[0].date}T12:00:00`).toLocaleDateString('en-NZ',{day:'numeric',month:'long',year:'numeric'})}</b></div><div><small>Time</small><b>{upcoming[0].time}</b></div></div>{upcoming[0].notes&&<p style={{fontSize:11,color:'#52645b'}}>{upcoming[0].notes}</p>}<Link href={`/reminders/${upcoming[0].id}`} className={styles.create}>Open reminder</Link></>:<button className={styles.create} onClick={openAdd}><Plus/>Add first reminder</button>}</div></section>
+    {formOpen&&<section className={styles.confirmCard} style={{maxWidth:1180,margin:'14px auto'}}><div className={styles.confirmHead}><div><p>{editing?'EDIT':'NEW REMINDER'}</p><h2>{editing?'Update reminder':'Check and save'}</h2></div><button onClick={()=>{setFormOpen(false);reset()}} aria-label="Close"><X/></button></div>{imageData&&<div className={styles.previewWrap}><img src={imageData} alt="Selected poster"/><div><FileImage/><span><b>{imageName}</b><small>{message}</small></span></div></div>}{!imageData&&message&&<div className={styles.saved}>{message}</div>}<label>Event title<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Event title"/></label><div className={styles.two}><label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label>Time<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label></div><label>Venue & address<input value={venue} onChange={e=>setVenue(e.target.value)} placeholder="Venue name and address"/></label><button className={styles.create} disabled={working||!title.trim()||!date||!time} onClick={save}><Save/>{working?'Working…':editing?'Save changes':'Save reminder'}</button></section>}
+    <section className={styles.listCard}><div className={styles.listHead}><div><p>UPCOMING</p><h2>Your shared reminders</h2></div><span>{upcoming.length} upcoming</span></div>{loading?<div className={styles.empty}><BellRing/><b>Loading reminders…</b></div>:sorted.length===0?<div className={styles.empty}><BellRing/><b>No reminders yet</b><span>Add one from a poster or type it in.</span></div>:<div className={styles.list}>{sorted.map(r=><article key={r.id} className={styles[urgency(r)]}><Link href={r.id.startsWith('local-')?'/reminders':`/reminders/${r.id}`} className={styles.reminderLink}>{r.posterUrl?<img src={r.posterUrl} className={styles.thumb} alt="Reminder poster"/>:<div className={styles.dateBox}><b>{new Date(`${r.date}T12:00:00`).toLocaleDateString('en-NZ',{day:'2-digit',month:'short'})}</b><span>{r.time}</span></div>}<div className={styles.reminderText}><b>{r.title}</b>{r.posterUrl&&<em>{whenLabel(r)}</em>}<small>{r.notes||`Added by ${r.createdBy==='geet'?'Geet':'Ravi'}`}</small><span>{countdown(r)}</span></div><ChevronRight className={styles.chevron}/></Link><div className={styles.rowActions}><a href={calendarUrl(r)} target="_blank" rel="noreferrer"><CalendarPlus/>Calendar</a><button onClick={()=>edit(r)} aria-label="Edit reminder"><Edit3/></button><button onClick={()=>remove(r.id)} aria-label="Delete reminder"><Trash2/></button></div></article>)}</div>}</section>
+  </main>
 }
